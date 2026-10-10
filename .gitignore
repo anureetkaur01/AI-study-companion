@@ -28,3 +28,7 @@ out/
 .venv/
 env/
 venv/
+*.traineddata
+uploads/
+backend/uploads/
+

@@ -5,12 +5,23 @@ import StudentProfile from '../models/StudentProfile.js';
 import geminiService from './geminiService.js';
 import topicProgressService from './topicProgressService.js';
 import { AppError } from '../middleware/errorHandler.js';
+import { validateQuestionCount, calculateQuizScore } from '../utils/validators.js';
 
 export class QuizService {
-  async generateQuiz(userId, contentId, difficulty = 'medium') {
+  async generateQuiz(userId, contentId, difficulty = 'medium', count = 5) {
+    const numCount = Number(count) || 5;
+    if (!validateQuestionCount(numCount)) {
+      throw new AppError('Question count must be between 5 and 20', 400);
+    }
+
     const content = await Content.findById(contentId);
     if (!content) {
       throw new AppError('Content not found', 404);
+    }
+
+    // Verify content ownership / private material isolation
+    if (content.userId && content.userId.toString() !== userId.toString()) {
+      throw new AppError('Access denied to private study material', 403);
     }
 
     // Get weak topics for adaptive generation
@@ -18,12 +29,12 @@ export class QuizService {
     const weakTopicNames = weakTopics.map(t => t.topic);
     
     // Inject weak topics into prompt if they exist
-    let prompt = content.originalText;
+    let prompt = content.originalText || content.transcript || content.title;
     if (weakTopicNames.length > 0) {
-      prompt = `Generate quiz questions. Focus more on these weak topics: ${weakTopicNames.join(', ')}\n\nContent: ${content.originalText}`;
+      prompt = `Generate quiz questions. Focus more on these weak topics: ${weakTopicNames.join(', ')}\n\nContent: ${prompt}`;
     }
 
-    const questions = await geminiService.generateQuiz(prompt, difficulty, 5);
+    const questions = await geminiService.generateQuiz(prompt, difficulty, numCount);
     
     const quiz = new Quiz({
       userId,
@@ -36,7 +47,7 @@ export class QuizService {
         options: q.options,
         correctAnswer: q.correctAnswer,
         explanation: q.explanation,
-        topic: content.topics[idx % content.topics.length] || 'General'
+        topic: (content.topics && content.topics[idx % content.topics.length]) || 'General'
       }))
     });
 
@@ -46,41 +57,34 @@ export class QuizService {
 
   async submitQuiz(quizId, userId, answers) {
     const quiz = await Quiz.findById(quizId);
-    if (!quiz || quiz.userId.toString() !== userId) {
-      throw new AppError('Quiz not found', 404);
+    if (!quiz || quiz.userId.toString() !== userId.toString()) {
+      throw new AppError('Quiz not found or unauthorized', 404);
     }
 
-    let correctCount = 0;
-    quiz.userAnswers = answers.map((answer, idx) => {
-      const question = quiz.questions[idx];
-      
-      // Normalize both answer and correctAnswer for comparison
-      const userAnswer = String(answer).trim().toLowerCase();
-      const correctAnswer = String(question.correctAnswer).trim().toLowerCase();
-      
-      // Check if answer matches correct answer
-      const isCorrect = userAnswer === correctAnswer;
-      
-      // Also check if answer is one of the options (in case of index-based answers)
-      let isCorrectOption = false;
-      if (!isCorrect && question.options) {
-        const optionIndex = question.options.findIndex(opt => 
-          String(opt).trim().toLowerCase() === userAnswer
-        );
-        isCorrectOption = optionIndex !== -1 && 
-          String(question.options[optionIndex]).trim().toLowerCase() === correctAnswer;
-      }
-      
-      const finalIsCorrect = isCorrect || isCorrectOption;
-      if (finalIsCorrect) correctCount++;
-      
-      console.log(`📝 Q${idx}: "${userAnswer}" vs "${correctAnswer}" = ${finalIsCorrect}`);
-      
-      return { questionId: question.id, answer, isCorrect: finalIsCorrect, timeSpent: 0 };
+    // Duplicate submission prevention (FR-10: Duplicate submissions do not incorrectly duplicate results)
+    if (quiz.completedAt) {
+      throw new AppError('Duplicate submission rejected: Quiz has already been completed', 400);
+    }
+
+    if (!Array.isArray(answers)) {
+      throw new AppError('Answers must be provided as an array', 400);
+    }
+
+    // Calculate score using verified business logic matrix (Decision-Table-Based)
+    const { score, accuracy, evaluatedAnswers } = calculateQuizScore(answers, quiz.questions);
+    
+    quiz.userAnswers = evaluatedAnswers.map((ea, idx) => {
+      const q = quiz.questions[idx];
+      return {
+        questionId: q.id || `q${idx}`,
+        answer: ea.answer,
+        isCorrect: ea.isCorrect,
+        timeSpent: 0
+      };
     });
 
-    quiz.score = correctCount;
-    quiz.accuracy = (correctCount / quiz.questions.length) * 100;
+    quiz.score = score;
+    quiz.accuracy = accuracy;
     quiz.completedAt = new Date();
 
     await quiz.save();
@@ -111,7 +115,7 @@ export class QuizService {
       await profile.save();
     }
 
-    console.log(`✅ Quiz ${quizId} completed: ${correctCount}/${quiz.questions.length} (${quiz.accuracy}%)`);
+    console.log(`✅ Quiz ${quizId} completed: ${score}/${quiz.questions.length} (${quiz.accuracy}%)`);
     return quiz;
   }
 

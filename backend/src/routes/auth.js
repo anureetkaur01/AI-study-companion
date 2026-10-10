@@ -7,11 +7,11 @@ const router = express.Router();
 
 router.post('/register', async (req, res, next) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, role } = req.body;
     if (!name || !email || !password) {
       throw new AppError('Missing required fields', 400);
     }
-    const result = await authService.register(name, email, password);
+    const result = await authService.register(name, email, password, role);
     res.status(201).json({ success: true, data: result });
   } catch (error) {
     next(error);

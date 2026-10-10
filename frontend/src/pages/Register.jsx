@@ -88,11 +88,44 @@ export const Register = () => {
           <Input
             label="Password"
             type="password"
-            placeholder="••••••••"
+            placeholder="•••••••• (min 6 characters)"
             value={formData.password}
             onChange={(e) => setFormData({ ...formData, password: e.target.value })}
             required
           />
+
+          <div>
+            <label className="block text-sm font-bold mb-2 text-gray-700">Account Role</label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setFormData({ ...formData, role: 'student' })}
+                className={`py-2.5 px-4 rounded-lg font-medium border-2 text-sm transition-all text-center ${
+                  (formData.role || 'student') === 'student'
+                    ? 'border-primary bg-primary bg-opacity-10 text-primary font-bold shadow-sm'
+                    : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                }`}
+              >
+                🎓 Student
+              </button>
+              <button
+                type="button"
+                onClick={() => setFormData({ ...formData, role: 'teacher' })}
+                className={`py-2.5 px-4 rounded-lg font-medium border-2 text-sm transition-all text-center ${
+                  formData.role === 'teacher'
+                    ? 'border-primary bg-primary bg-opacity-10 text-primary font-bold shadow-sm'
+                    : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                }`}
+              >
+                👨‍🏫 Teacher
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mt-1.5">
+              {formData.role === 'teacher' 
+                ? 'Teachers can generate lecture materials, download PPTX slides & PDF notes.' 
+                : 'Students can take quizzes, track mastery, and summarize notes.'}
+            </p>
+          </div>
           <Button type="submit" loading={loading} className="w-full">
             {loading ? 'Creating account...' : 'Create Account'}
           </Button>

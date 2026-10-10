@@ -2,6 +2,7 @@ import express from 'express';
 import contentService from '../services/contentService.js';
 import youtubeService from '../services/youtubeService.js';
 import fileExtractionService from '../services/fileExtractionService.js';
+import videoProcessingService from '../services/videoProcessingService.js';
 import { authenticate } from '../middleware/auth.js';
 import { upload } from '../middleware/multerConfig.js';
 import { AppError } from '../middleware/errorHandler.js';
@@ -102,9 +103,10 @@ router.post('/upload', authenticate, async (req, res, next) => {
   }
 });
 
-// NEW: File upload endpoint for local files (PDF, DOCX, TXT)
+// Comprehensive file upload endpoint (PDF, DOCX, TXT, Images, MP4 Videos)
 router.post('/upload-file', authenticate, upload.single('file'), async (req, res, next) => {
   let filePath = null;
+  let keepFile = false;
   try {
     if (!req.file) {
       throw new AppError('No file uploaded', 400);
@@ -118,28 +120,55 @@ router.post('/upload-file', authenticate, upload.single('file'), async (req, res
     filePath = req.file.path;
     const fileType = req.file.mimetype;
     const fileName = req.file.originalname;
+    const ext = fileName.slice(fileName.lastIndexOf('.')).toLowerCase();
 
-    console.log(`📄 Processing file upload: ${fileName}`);
+    console.log(`📄 Processing file upload: ${fileName} (${ext})`);
 
     // Validate file
     fileExtractionService.validateFileType(fileName);
     fileExtractionService.validateFileSize(req.file.size);
 
-    // Extract text from file
+    // Case 1: Video Files (MP4, M4V, WEBM) -> Asynchronous Background Processing
+    if (['.mp4', '.m4v', '.webm'].includes(ext)) {
+      keepFile = true; // Retain file until background transcription finishes
+      const content = await contentService.uploadContent(
+        req.userId,
+        title.trim(),
+        'Video upload received. Speech-to-text transcription is currently running in the background...',
+        'video',
+        {
+          transcriptionStatus: 'processing',
+          mediaUrl: filePath
+        }
+      );
+
+      // Trigger background audio extraction & Whisper transcription asynchronously
+      videoProcessingService.processVideoJob(content._id, filePath, title.trim())
+        .catch(err => console.error('Background transcription error:', err));
+
+      return res.status(201).json({
+        success: true,
+        data: {
+          ...content.toObject(),
+          fileName: fileName,
+          status: 'processing'
+        },
+        message: 'Video uploaded. Audio extraction and speech-to-text transcription started in the background.'
+      });
+    }
+
+    // Case 2: Document or Image (OCR)
     const extractedText = await fileExtractionService.extractText(filePath, fileType);
 
     if (!extractedText || extractedText.trim().length === 0) {
-      throw new AppError('Could not extract text from file', 400);
+      throw new AppError('Could not extract text from file (file may be blank, corrupt, or unreadable)', 400);
     }
 
-    // Determine file type
-    const ext = fileName.split('.').pop().toLowerCase();
     let contentType = 'text';
-    if (ext === 'pdf') contentType = 'pdf';
-    else if (ext === 'docx' || ext === 'doc') contentType = 'docx';
-    else if (ext === 'txt') contentType = 'text';
+    if (ext === '.pdf') contentType = 'pdf';
+    else if (ext === '.docx' || ext === '.doc') contentType = 'docx';
+    else if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) contentType = 'image';
 
-    // Create content with extracted text
     const content = await contentService.uploadContent(
       req.userId,
       title.trim(),
@@ -148,9 +177,6 @@ router.post('/upload-file', authenticate, upload.single('file'), async (req, res
     );
 
     console.log(`✅ File processed successfully - ID: ${content._id}, Type: ${contentType}`);
-    console.log(`   Extracted: ${extractedText.length} characters`);
-    console.log(`   Topics: ${content.topics.join(', ')}`);
-
     res.status(201).json({
       success: true,
       data: {
@@ -160,14 +186,12 @@ router.post('/upload-file', authenticate, upload.single('file'), async (req, res
       }
     });
   } catch (error) {
-    // Clean up uploaded file on error
-    if (filePath) {
+    if (filePath && !keepFile) {
       await fileExtractionService.cleanupFile(filePath);
     }
     next(error);
   } finally {
-    // Clean up temporary file after processing
-    if (filePath) {
+    if (filePath && !keepFile) {
       setTimeout(() => {
         fileExtractionService.cleanupFile(filePath);
       }, 1000);
@@ -175,10 +199,49 @@ router.post('/upload-file', authenticate, upload.single('file'), async (req, res
   }
 });
 
+// Check video transcription status
+router.get('/:id/transcription-status', authenticate, async (req, res, next) => {
+  try {
+    const content = await contentService.getContent(req.params.id, req.userId);
+    res.json({
+      success: true,
+      data: {
+        id: content._id,
+        status: content.transcriptionStatus || 'none',
+        hasTranscript: !!content.transcript,
+        transcript: content.transcript || '',
+        summaries: content.summaries
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Summarize content
 router.post('/:id/summarize', authenticate, async (req, res, next) => {
   try {
-    const content = await contentService.generateSummaries(req.params.id);
+    const content = await contentService.generateSummaries(req.params.id, req.userId);
     res.json({ success: true, data: content });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Regenerate summary explicitly (FR-06)
+router.post('/:id/regenerate-summary', authenticate, async (req, res, next) => {
+  try {
+    const content = await contentService.generateSummaries(req.params.id, req.userId);
+    res.json({ success: true, data: content, message: 'Summary successfully regenerated' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete('/:id', authenticate, async (req, res, next) => {
+  try {
+    const result = await contentService.deleteContent(req.params.id, req.userId);
+    res.json({ success: true, data: result });
   } catch (error) {
     next(error);
   }

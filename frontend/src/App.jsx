@@ -15,8 +15,10 @@ import { Compare } from './pages/Compare';
 import { Flashcards } from './pages/Flashcards';
 import { Pomodoro } from './pages/Pomodoro';
 import { Profile } from './pages/Profile';
+import { TeacherLectures } from './pages/TeacherLectures';
 import { 
-  BookOpen, BarChart3, Layers, Clock, Map, TrendingUp, Users, MessageCircle, User, LogOut, Home as HomeIcon
+  BookOpen, BarChart3, Layers, Clock, Map, TrendingUp, Users, MessageCircle, User, LogOut, Home as HomeIcon,
+  Presentation
 } from 'lucide-react';
 import client from './api/client';
 
@@ -29,18 +31,27 @@ const Layout = ({ children }) => {
   const user = useAuthStore((state) => state.user);
   const logout = useAuthStore((state) => state.logout);
   const navigate = useNavigate();
+  const isTeacher = user?.role === 'teacher';
 
-  const navItems = [
-    { icon: BarChart3, label: 'Dashboard', path: '/dashboard' },
-    { icon: Layers, label: 'Content', path: '/content' },
-    { icon: Layers, label: 'Flashcards', path: '/flashcards' },
-    { icon: Clock, label: 'Pomodoro', path: '/pomodoro' },
-    { icon: Map, label: 'Learning Path', path: '/learning-path' },
-    { icon: TrendingUp, label: 'Analytics', path: '/analytics' },
-    { icon: Users, label: 'Compare', path: '/compare' },
-    { icon: MessageCircle, label: 'Chat with AI', path: '/chatbot' },
-    { icon: User, label: 'My Profile', path: `/profile/${user?.username}` }
-  ];
+  const navItems = isTeacher
+    ? [
+        { icon: BarChart3, label: 'Teacher Dashboard', path: '/dashboard' },
+        { icon: Presentation, label: 'Lecture Studio', path: '/teacher/lectures' },
+        { icon: Layers, label: 'Teaching Materials', path: '/content' },
+        { icon: MessageCircle, label: 'Chat with AI', path: '/chatbot' },
+        { icon: User, label: 'My Profile', path: `/profile/${user?.username}` }
+      ]
+    : [
+        { icon: BarChart3, label: 'Dashboard', path: '/dashboard' },
+        { icon: Layers, label: 'Study Materials', path: '/content' },
+        { icon: Layers, label: 'Flashcards', path: '/flashcards' },
+        { icon: Clock, label: 'Pomodoro', path: '/pomodoro' },
+        { icon: Map, label: 'Learning Path', path: '/learning-path' },
+        { icon: TrendingUp, label: 'Analytics', path: '/analytics' },
+        { icon: Users, label: 'Compare', path: '/compare' },
+        { icon: MessageCircle, label: 'Chat with AI', path: '/chatbot' },
+        { icon: User, label: 'My Profile', path: `/profile/${user?.username}` }
+      ];
 
   return (
     <div className="min-h-screen bg-bg-primary flex">
@@ -76,7 +87,14 @@ const Layout = ({ children }) => {
         {/* User Section - Fixed at bottom */}
         <div className="border-t border-border p-4 space-y-3">
           <div className="bg-bg-primary rounded-lg p-3">
-            <p className="text-xs text-text-secondary font-semibold uppercase tracking-wide">Logged in as</p>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[10px] text-text-secondary font-bold uppercase tracking-wider">Logged in as</p>
+              <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider ${
+                isTeacher ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'
+              }`}>
+                {user?.role || 'student'}
+              </span>
+            </div>
             <p className="font-semibold text-text-primary truncate">{user?.name}</p>
           </div>
           <button
@@ -155,6 +173,16 @@ function App() {
             <ProtectedRoute>
               <Layout>
                 <Content />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/teacher/lectures"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <TeacherLectures />
               </Layout>
             </ProtectedRoute>
           }

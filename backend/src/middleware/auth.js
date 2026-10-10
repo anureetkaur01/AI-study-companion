@@ -3,16 +3,34 @@ import { AppError } from './errorHandler.js';
 
 export const authenticate = (req, res, next) => {
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-    
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      throw new AppError('No token provided', 401);
+    }
+
+    const token = authHeader.split(' ')[1];
     if (!token) {
       throw new AppError('No token provided', 401);
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const secret = process.env.JWT_SECRET || 'study_companion_secret_key';
+    const decoded = jwt.verify(token, secret);
     req.userId = decoded.userId;
+    req.userRole = decoded.role || 'student';
     next();
   } catch (error) {
-    next(new AppError('Invalid token', 401));
+    if (error instanceof AppError) {
+      return next(error);
+    }
+    next(new AppError('Invalid or expired token', 401));
   }
+};
+
+export const authorizeRoles = (...allowedRoles) => {
+  return (req, res, next) => {
+    if (!req.userRole || !allowedRoles.includes(req.userRole)) {
+      return next(new AppError(`Access denied: required role in [${allowedRoles.join(', ')}]`, 403));
+    }
+    next();
+  };
 };

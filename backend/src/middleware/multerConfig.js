@@ -26,16 +26,27 @@ const fileFilter = (req, file, cb) => {
     'application/pdf',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     'application/msword',
-    'text/plain'
+    'text/plain',
+    'image/png',
+    'image/jpeg',
+    'image/jpg',
+    'image/webp',
+    'video/mp4',
+    'video/quicktime',
+    'video/webm'
   ];
 
-  const allowedExtensions = ['.pdf', '.docx', '.doc', '.txt'];
+  const allowedExtensions = [
+    '.pdf', '.docx', '.doc', '.txt',
+    '.png', '.jpg', '.jpeg', '.webp',
+    '.mp4', '.m4v', '.webm'
+  ];
   const ext = path.extname(file.originalname).toLowerCase();
 
-  if (allowedMimes.includes(file.mimetype) && allowedExtensions.includes(ext)) {
+  if (allowedExtensions.includes(ext)) {
     cb(null, true);
   } else {
-    cb(new Error(`Invalid file type. Allowed: PDF, DOCX, DOC, TXT`), false);
+    cb(new Error(`Invalid file type. Allowed: PDF, DOCX, DOC, TXT, PNG, JPG, JPEG, WEBP, MP4`), false);
   }
 };
 

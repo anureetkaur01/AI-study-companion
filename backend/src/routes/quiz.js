@@ -7,13 +7,13 @@ const router = express.Router();
 
 router.post('/generate', authenticate, async (req, res, next) => {
   try {
-    const { contentId } = req.body;
+    const { contentId, difficulty, count } = req.body;
     if (!contentId) {
       throw new AppError('Missing contentId', 400);
     }
 
-    const difficulty = await quizService.getAdaptiveDifficulty(req.userId, contentId);
-    const quiz = await quizService.generateQuiz(req.userId, contentId, difficulty);
+    const selectedDifficulty = difficulty || await quizService.getAdaptiveDifficulty(req.userId, contentId);
+    const quiz = await quizService.generateQuiz(req.userId, contentId, selectedDifficulty, count || 5);
     res.status(201).json({ success: true, data: quiz });
   } catch (error) {
     next(error);

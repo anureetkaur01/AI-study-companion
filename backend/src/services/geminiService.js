@@ -1,5 +1,6 @@
 import axios from 'axios';
-// import { GoogleGenerativeAI } from '@google/generative-ai';
+import { validateQuestionCount } from '../utils/validators.js';
+import { AppError } from '../middleware/errorHandler.js';
 
 // Ollama API endpoint (runs locally)
 const OLLAMA_API = 'http://localhost:11434/api/generate';
@@ -35,8 +36,13 @@ export class GeminiService {
   }
 
   async generateQuiz(text, difficulty = 'medium', count = 5) {
+    const numCount = Number(count) || 5;
+    if (!validateQuestionCount(numCount)) {
+      throw new AppError('Question count must be between 5 and 20', 400);
+    }
+
     try {
-      const prompt = `Generate exactly 5 multiple choice questions about this text. For each question, provide:
+      const prompt = `Generate exactly ${numCount} multiple choice questions about this text with difficulty level "${difficulty}". For each question, provide:
 1. question (string)
 2. options (array of exactly 4 strings - just the answer text, no letters)
 3. correctAnswer (must be EXACTLY one of the 4 options as a string, not an array)
@@ -58,18 +64,13 @@ Text: ${text}`;
         
         // Try to extract JSON array
         let jsonStr = responseText.trim();
-        
-        // Remove markdown code blocks if present
         jsonStr = jsonStr.replace(/```json\n?/g, '').replace(/```\n?/g, '');
         
-        // Find the JSON array
         const startIdx = jsonStr.indexOf('[');
         const endIdx = jsonStr.lastIndexOf(']');
         
         if (startIdx !== -1 && endIdx !== -1) {
           jsonStr = jsonStr.substring(startIdx, endIdx + 1);
-          
-          // Clean up common JSON issues
           jsonStr = jsonStr.replace(/[\n\r\t]/g, ' ');
           jsonStr = jsonStr.replace(/,\s*]/g, ']');
           jsonStr = jsonStr.replace(/,\s*}/g, '}');
@@ -77,16 +78,15 @@ Text: ${text}`;
           
           const parsed = JSON.parse(jsonStr);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            // Validate and fix each question
-            return parsed.map(q => {
-              // Ensure options is an array of strings
+            return parsed.slice(0, numCount).map(q => {
               let options = Array.isArray(q.options) ? q.options : [q.options || ''];
               options = options.map(opt => String(opt).trim());
+              while (options.length < 4) {
+                options.push(`Option ${options.length + 1}`);
+              }
+              options = options.slice(0, 4);
               
-              // Ensure correctAnswer is a string and is one of the options
               let correctAnswer = String(q.correctAnswer || '').trim();
-              
-              // If correctAnswer is not in options, use first option
               if (!options.includes(correctAnswer)) {
                 correctAnswer = options[0];
               }
@@ -105,11 +105,12 @@ Text: ${text}`;
       }
       
       console.warn('⚠️ FALLBACK: Using mock quiz (Ollama response parsing failed)');
-      return this.getMockQuiz(difficulty);
+      return this.getMockQuiz(difficulty, numCount);
     } catch (error) {
+      if (error instanceof AppError) throw error;
       console.error('❌ Ollama API error:', error.message);
       console.warn('⚠️ FALLBACK: Using mock quiz (Ollama not responding)');
-      return this.getMockQuiz(difficulty);
+      return this.getMockQuiz(difficulty, numCount);
     }
   }
 
@@ -239,31 +240,134 @@ Text: ${text}`;
     }
   }
 
-  getMockQuiz(difficulty) {
-    const difficulties = {
-      easy: [
-        { question: 'What is the main topic discussed?', options: ['Photosynthesis', 'Respiration', 'Digestion', 'Circulation'], correctAnswer: 'Photosynthesis', explanation: 'This is the primary topic of the material.' },
-        { question: 'Which process is described?', options: ['Fermentation', 'Photosynthesis', 'Combustion', 'Oxidation'], correctAnswer: 'Photosynthesis', explanation: 'The material focuses on this biological process.' },
-        { question: 'Where does this occur?', options: ['Mitochondria', 'Chloroplast', 'Nucleus', 'Ribosome'], correctAnswer: 'Chloroplast', explanation: 'This is the correct cellular location.' },
-        { question: 'What is produced?', options: ['ATP only', 'Glucose and Oxygen', 'Carbon Dioxide', 'Water'], correctAnswer: 'Glucose and Oxygen', explanation: 'These are the main products.' },
-        { question: 'What is required?', options: ['Heat and Pressure', 'Light Energy and Water', 'Electricity', 'Chemicals'], correctAnswer: 'Light Energy and Water', explanation: 'These are the key inputs.' }
+  getMockQuiz(difficulty = 'medium', count = 5) {
+    const num = Math.max(5, Math.min(20, Number(count) || 5));
+    const baseQuestions = [
+      { question: 'What is the foundational concept discussed in this material?', options: ['Core Architecture', 'Legacy Protocols', 'Manual Verification', 'Unstructured Storage'], correctAnswer: 'Core Architecture', explanation: 'The study material emphasizes the core architecture as foundational.' },
+      { question: 'Which mechanism is primary for ensuring system consistency?', options: ['Periodic Polling', 'State Validation & Transactions', 'Random Access Memory', 'Asynchronous Queuing Only'], correctAnswer: 'State Validation & Transactions', explanation: 'State validation and transactional guarantees preserve consistency.' },
+      { question: 'What is the primary benefit of modular software engineering?', options: ['Increased Hardware Consumption', 'Testability & Maintainability', 'Redundant Code Execution', 'Single Point of Failure'], correctAnswer: 'Testability & Maintainability', explanation: 'Modularity facilitates isolated testing and streamlined maintainability.' },
+      { question: 'How are boundary limits properly evaluated in verification?', options: ['Testing Only Nominal Values', 'Boundary Value Analysis (BVA)', 'Random Guessing', 'Code Minification'], correctAnswer: 'Boundary Value Analysis (BVA)', explanation: 'Boundary Value Analysis checks edges and off-by-one conditions.' },
+      { question: 'Which testing technique pairs inputs using a decision table?', options: ['Decision-Table-Based Testing', 'Stress Testing', 'Static Type Checking', 'Monkey Testing'], correctAnswer: 'Decision-Table-Based Testing', explanation: 'Decision tables evaluate combinations of input conditions and rules.' },
+      { question: 'What guarantees deterministic execution across modules?', options: ['Race Conditions', 'Pure Functions & Validation Rules', 'Network Latency', 'Global Mutable State'], correctAnswer: 'Pure Functions & Validation Rules', explanation: 'Pure functions and strict validation ensure deterministic outcomes.' },
+      { question: 'Which approach provides speech-to-text transcription for videos?', options: ['Optical Character Recognition', 'Whisper-Compatible STT Model', 'Lexical Grammar Parser', 'CSS Preprocessor'], correctAnswer: 'Whisper-Compatible STT Model', explanation: 'Speech-to-text models like Whisper transcribe speech audio.' },
+      { question: 'How is text extracted from uploaded image documents?', options: ['DOM Traversal', 'Tesseract Optical Character Recognition (OCR)', 'Binary Hexdump', 'Audio Synthesizer'], correctAnswer: 'Tesseract Optical Character Recognition (OCR)', explanation: 'OCR tools like Tesseract extract characters from image rasters.' },
+      { question: 'What is the purpose of role-based authorization in web apps?', options: ['Coloring Buttons', 'Restricting Features to Authorized Roles', 'Speeding up DNS', 'Reducing Database Records'], correctAnswer: 'Restricting Features to Authorized Roles', explanation: 'Role-based access enforces security and prevents unauthorized actions.' },
+      { question: 'What ensures safe password storage in a database?', options: ['Plaintext Serialization', 'Bcrypt Salted Hashing', 'Base64 Encoding', 'Rot13 Cipher'], correctAnswer: 'Bcrypt Salted Hashing', explanation: 'Salted cryptographic hashing like Bcrypt protects passwords.' },
+      { question: 'Why is input validation critical before processing files?', options: ['Prevents Arbitrary Code Execution and DoS', 'Minimizes Screen Brightness', 'Shortens URL Length', 'Increases Network Ping'], correctAnswer: 'Prevents Arbitrary Code Execution and DoS', explanation: 'Validating file size and mime types prevents server resource exhaustion.' },
+      { question: 'What is an equivalence partition in software testing?', options: ['A set of inputs treated identically by system logic', 'A database shard', 'A network subnet', 'A git commit hash'], correctAnswer: 'A set of inputs treated identically by system logic', explanation: 'Equivalence partitions group values expected to produce the same outcome.' },
+      { question: 'What role does an automated regression test suite serve?', options: ['Detects defects introduced by recent code updates', 'Cleans disk cache', 'Creates user accounts', 'Compiles documentation'], correctAnswer: 'Detects defects introduced by recent code updates', explanation: 'Regression testing verifies that existing behavior remains intact.' },
+      { question: 'How should long-running transcription tasks be processed?', options: ['Synchronous Browser Request Blocking', 'Asynchronous Background Jobs', 'Halting Server Execution', 'Dropping User Sessions'], correctAnswer: 'Asynchronous Background Jobs', explanation: 'Background processing avoids client timeouts on heavy media jobs.' },
+      { question: 'What is the benefit of reusing validated lecture content for PPTX and PDF?', options: ['Guarantees Consistency Across Formats Without Redundant AI Calls', 'Consumes Double Storage', 'Slows Down Generation', 'Avoids File Formatting'], correctAnswer: 'Guarantees Consistency Across Formats Without Redundant AI Calls', explanation: 'Shared data structures ensure presentation slides and notes match exactly.' },
+      { question: 'How should unreadable or corrupt documents be handled?', options: ['Crash Server Process', 'Return Informative Error and Handle Gracefully', 'Insert Corrupted Rows', 'Ignore Without Message'], correctAnswer: 'Return Informative Error and Handle Gracefully', explanation: 'Robust systems catch extraction errors and notify the user.' },
+      { question: 'Which library enables programmatic PowerPoint (.pptx) file generation?', options: ['PptxGenJS', 'Moment.js', 'Lodash', 'Bcrypt'], correctAnswer: 'PptxGenJS', explanation: 'PptxGenJS generates Microsoft PowerPoint presentations in JavaScript.' },
+      { question: 'Which library enables server-side PDF generation in Node.js?', options: ['PDFKit', 'Nodemon', 'Multer', 'Express'], correctAnswer: 'PDFKit', explanation: 'PDFKit creates formatted vector PDF documents on the server.' },
+      { question: 'What is the role of an adaptive quiz algorithm?', options: ['Adjusts Difficulty or Focuses on Weak Mastery Topics', 'Deletes User History', 'Reroutes Network Traffic', 'Freezes Timers'], correctAnswer: 'Adjusts Difficulty or Focuses on Weak Mastery Topics', explanation: 'Adaptive learning dynamically targets topics requiring reinforcement.' },
+      { question: 'What distinguishes teacher workflows from student workflows in the platform?', options: ['Teachers Can Generate Structured Lectures and Download PPT/PDFs', 'Teachers Have No Dashboards', 'Students Can Delete Other Users Data', 'Students Manage Server Config'], correctAnswer: 'Teachers Can Generate Structured Lectures and Download PPT/PDFs', explanation: 'Teacher accounts provide lecture creation, slide decks, and handouts.' }
+    ];
+
+    return baseQuestions.slice(0, num);
+  }
+
+  async generateLectureContent(topicOrText, title = 'Lecture') {
+    try {
+      const prompt = `Generate a structured, professional academic lecture for topic/content: "${title}".
+Content details: ${topicOrText}
+
+Return ONLY valid JSON matching this exact structure:
+{
+  "title": "${title}",
+  "topic": "${title}",
+  "learningObjectives": ["Objective 1", "Objective 2", "Objective 3"],
+  "introduction": "Comprehensive introduction paragraph...",
+  "mainConcepts": [
+    {
+      "title": "Concept 1 Title",
+      "explanation": "Detailed explanation of concept 1...",
+      "examples": ["Example 1a", "Example 1b"]
+    },
+    {
+      "title": "Concept 2 Title",
+      "explanation": "Detailed explanation of concept 2...",
+      "examples": ["Example 2a", "Example 2b"]
+    },
+    {
+      "title": "Concept 3 Title",
+      "explanation": "Detailed explanation of concept 3...",
+      "examples": ["Example 3a", "Example 3b"]
+    }
+  ],
+  "summary": "Synthesized conclusion and key points...",
+  "reviewQuestions": [
+    "Review Question 1?",
+    "Review Question 2?",
+    "Review Question 3?"
+  ]
+}`;
+
+      const response = await axios.post(OLLAMA_API, {
+        model: 'mistral',
+        prompt: prompt,
+        stream: false
+      });
+
+      const responseText = response.data.response || '';
+      let jsonStr = responseText.trim().replace(/```json\n?/g, '').replace(/```\n?/g, '');
+      const startIdx = jsonStr.indexOf('{');
+      const endIdx = jsonStr.lastIndexOf('}');
+      if (startIdx !== -1 && endIdx !== -1) {
+        jsonStr = jsonStr.substring(startIdx, endIdx + 1);
+        const parsed = JSON.parse(jsonStr);
+        if (parsed.title && Array.isArray(parsed.learningObjectives) && Array.isArray(parsed.mainConcepts)) {
+          return parsed;
+        }
+      }
+    } catch (err) {
+      console.warn('⚠️ Ollama lecture generation note:', err.message);
+    }
+
+    // High quality deterministic fallback lecture content
+    return {
+      title: title || 'Comprehensive Lecture Notes',
+      topic: title || 'Educational Topic',
+      learningObjectives: [
+        `Understand the fundamental principles and theoretical foundations of ${title}`,
+        `Analyze key components, architecture, and real-world mechanisms of ${title}`,
+        `Apply core problem-solving methodologies and evaluate practical implementations`
       ],
-      medium: [
-        { question: 'Analyze the concept of light-dependent reactions', options: ['Occurs in stroma', 'Produces ATP and NADPH', 'Does not require light', 'Produces glucose directly'], correctAnswer: 'Produces ATP and NADPH', explanation: 'Light-dependent reactions generate energy carriers.' },
-        { question: 'What is the relationship between the two stages?', options: ['Independent processes', 'First stage provides energy for second', 'Second stage provides energy for first', 'They are identical'], correctAnswer: 'First stage provides energy for second', explanation: 'The light reactions provide ATP and NADPH for the Calvin cycle.' },
-        { question: 'How does photolysis contribute?', options: ['Produces glucose', 'Splits water and releases oxygen', 'Fixes carbon dioxide', 'Creates ATP'], correctAnswer: 'Splits water and releases oxygen', explanation: 'Water splitting is a key part of light reactions.' },
-        { question: 'What role does chlorophyll play?', options: ['Stores glucose', 'Absorbs light energy', 'Produces oxygen', 'Fixes CO2'], correctAnswer: 'Absorbs light energy', explanation: 'Chlorophyll is the primary light-absorbing pigment.' },
-        { question: 'How is efficiency affected?', options: ['Only by temperature', 'By light intensity, temperature, and CO2', 'Only by CO2 concentration', 'Not affected by external factors'], correctAnswer: 'By light intensity, temperature, and CO2', explanation: 'Multiple factors influence photosynthetic efficiency.' }
+      introduction: `${title} represents a core foundation in modern computer science and software verification. Understanding its structure allows students and practitioners to design resilient architectures, reason about correctness, and deploy scalable solutions in industry environments.`,
+      mainConcepts: [
+        {
+          title: `Core Principles of ${title}`,
+          explanation: `The primary framework consists of structured specifications, systematic validation rules, and isolated state transformations that ensure consistency and prevent anomalous behaviors under high workloads.`,
+          examples: [
+            `Standard design patterns implemented in distributed and desktop systems`,
+            `Formal verification rules ensuring pre-conditions and post-conditions are met`
+          ]
+        },
+        {
+          title: `Architectural Design & Practical Workflow`,
+          explanation: `In practice, components are decoupled into clean presentation layers, business logic controllers, and persistent repositories to enable comprehensive automated testing and modular updates.`,
+          examples: [
+            `Separation of concerns between client components and backend services`,
+            `Transactional persistence with schema validation and error boundaries`
+          ]
+        },
+        {
+          title: `Verification, Testing & Performance Evaluation`,
+          explanation: `Systematic testing strategies including Equivalence Partitioning, Boundary Value Analysis, and Decision Tables guarantee edge cases are identified and rectified early in the development lifecycle.`,
+          examples: [
+            `Testing minimum and maximum boundaries for all configurable inputs`,
+            `Automated regression testing suites executed upon every code change`
+          ]
+        }
       ],
-      hard: [
-        { question: 'Evaluate the electron transport chain in photosynthesis', options: ['Produces only ATP', 'Transfers electrons and creates proton gradient', 'Directly produces glucose', 'Is independent of light'], correctAnswer: 'Transfers electrons and creates proton gradient', explanation: 'The electron transport chain is crucial for energy production.' },
-        { question: 'Synthesize the relationship between photosynthesis and cellular respiration', options: ['They are opposite processes', 'Photosynthesis produces glucose for respiration', 'They occur simultaneously', 'They are unrelated'], correctAnswer: 'Photosynthesis produces glucose for respiration', explanation: 'These processes are complementary in the biosphere.' },
-        { question: 'What is the critical limitation in the Calvin cycle?', options: ['Lack of light', 'CO2 concentration and enzyme efficiency', 'Excess oxygen', 'Temperature stability'], correctAnswer: 'CO2 concentration and enzyme efficiency', explanation: 'These factors limit the rate of glucose production.' },
-        { question: 'Predict the outcome of increased CO2 levels', options: ['Decreased photosynthesis', 'Increased photosynthesis until saturation', 'No effect', 'Photosynthesis stops'], correctAnswer: 'Increased photosynthesis until saturation', explanation: 'CO2 is a limiting factor that can be increased to a point.' },
-        { question: 'Justify why photosynthesis is essential for life', options: ['Produces oxygen for respiration', 'Converts light to chemical energy', 'Forms the base of food chains', 'All of the above'], correctAnswer: 'All of the above', explanation: 'Photosynthesis is fundamental to life on Earth.' }
+      summary: `In summary, mastering ${title} provides students with the critical analytical and engineering skills necessary to build verified, reliable software products. Consistent review of these concepts reinforces retention and exam readiness.`,
+      reviewQuestions: [
+        `What are the primary operational benefits of applying ${title} in production?`,
+        `How does modular component separation enhance automated test coverage?`,
+        `Describe a scenario where boundary value analysis prevents an off-by-one runtime failure.`
       ]
     };
-    return difficulties[difficulty] || difficulties.medium;
   }
 
   getMockTopics(text) {

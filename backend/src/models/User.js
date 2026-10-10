@@ -6,6 +6,7 @@ const userSchema = new mongoose.Schema({
   username: { type: String, unique: true, sparse: true, lowercase: true },
   email: { type: String, required: true, unique: true, lowercase: true },
   password: { type: String, required: true },
+  role: { type: String, enum: ['student', 'teacher'], default: 'student' },
   xp: { type: Number, default: 0 },
   streak: { type: Number, default: 0 },
   lastStudyDate: { type: Date },
