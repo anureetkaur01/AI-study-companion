@@ -1,16 +1,30 @@
-import axios from 'axios';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { validateQuestionCount } from '../utils/validators.js';
 import { AppError } from '../middleware/errorHandler.js';
 
-// Ollama API endpoint (runs locally)
-const OLLAMA_API = 'http://localhost:11434/api/generate';
-
-// Initialize Gemini API (commented out - using Ollama instead)
-// const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-// const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
-
 export class GeminiService {
+  getModel() {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === 'your_gemini_api_key_here' || apiKey.trim() === '') {
+      return null;
+    }
+    try {
+      const genAI = new GoogleGenerativeAI(apiKey.trim());
+      const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+      return genAI.getGenerativeModel({ model: modelName });
+    } catch (err) {
+      console.error('❌ Failed to initialize Gemini model:', err.message);
+      return null;
+    }
+  }
+
   async generateSummary(text, type = 'brief') {
+    const model = this.getModel();
+    if (!model) {
+      console.warn('⚠️ GEMINI_API_KEY not configured or invalid, using fallback summary');
+      return this.getMockSummary(text, type);
+    }
+
     try {
       const prompts = {
         brief: `Summarize this in 2-3 sentences:\n\n${text}`,
@@ -18,19 +32,12 @@ export class GeminiService {
         comprehensive: `Provide a comprehensive summary with key points:\n\n${text}`
       };
 
-      const response = await axios.post(OLLAMA_API, {
-        model: 'mistral',  // Smaller, faster model (2.2GB vs 4.4GB)
-        // model: 'phi3',  // Smaller, faster model (2.2GB vs 4.4GB)
-        prompt: prompts[type],
-        stream: false
-      }, {
-        timeout: 30000  // 30 second timeout
-      });
-
-      return response.data.response;
+      const result = await model.generateContent(prompts[type] || prompts.brief);
+      const response = await result.response;
+      return response.text();
     } catch (error) {
-      console.error('❌ Ollama API error:', error.message);
-      console.warn('⚠️ FALLBACK: Using mock summary (Ollama not running)');
+      console.error('❌ Gemini API error:', error.message);
+      console.warn('⚠️ FALLBACK: Using mock summary');
       return this.getMockSummary(text, type);
     }
   }
@@ -39,6 +46,12 @@ export class GeminiService {
     const numCount = Number(count) || 5;
     if (!validateQuestionCount(numCount)) {
       throw new AppError('Question count must be between 5 and 20', 400);
+    }
+
+    const model = this.getModel();
+    if (!model) {
+      console.warn('⚠️ GEMINI_API_KEY not configured, using fallback quiz');
+      return this.getMockQuiz(difficulty, numCount);
     }
 
     try {
@@ -53,177 +66,155 @@ Return ONLY valid JSON array, no other text. Example format:
 
 Text: ${text}`;
 
-      const response = await axios.post(OLLAMA_API, {
-        model: 'mistral',
-        prompt: prompt,
-        stream: false
-      });
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const responseText = response.text() || '';
 
-      try {
-        const responseText = response.data.response || '';
-        
-        // Try to extract JSON array
-        let jsonStr = responseText.trim();
-        jsonStr = jsonStr.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-        
-        const startIdx = jsonStr.indexOf('[');
-        const endIdx = jsonStr.lastIndexOf(']');
-        
-        if (startIdx !== -1 && endIdx !== -1) {
-          jsonStr = jsonStr.substring(startIdx, endIdx + 1);
-          jsonStr = jsonStr.replace(/[\n\r\t]/g, ' ');
-          jsonStr = jsonStr.replace(/,\s*]/g, ']');
-          jsonStr = jsonStr.replace(/,\s*}/g, '}');
-          jsonStr = jsonStr.replace(/:\s*\[/g, ':[');
-          
-          const parsed = JSON.parse(jsonStr);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            return parsed.slice(0, numCount).map(q => {
-              let options = Array.isArray(q.options) ? q.options : [q.options || ''];
-              options = options.map(opt => String(opt).trim());
-              while (options.length < 4) {
-                options.push(`Option ${options.length + 1}`);
-              }
-              options = options.slice(0, 4);
-              
-              let correctAnswer = String(q.correctAnswer || '').trim();
-              if (!options.includes(correctAnswer)) {
-                correctAnswer = options[0];
-              }
-              
-              return {
-                question: String(q.question || '').trim(),
-                options: options,
-                correctAnswer: correctAnswer,
-                explanation: String(q.explanation || '').trim()
-              };
-            });
-          }
+      // Try to extract JSON array
+      let jsonStr = responseText.trim();
+      jsonStr = jsonStr.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+
+      const startIdx = jsonStr.indexOf('[');
+      const endIdx = jsonStr.lastIndexOf(']');
+
+      if (startIdx !== -1 && endIdx !== -1) {
+        jsonStr = jsonStr.substring(startIdx, endIdx + 1);
+        jsonStr = jsonStr.replace(/[\n\r\t]/g, ' ');
+        jsonStr = jsonStr.replace(/,\s*]/g, ']');
+        jsonStr = jsonStr.replace(/,\s*}/g, '}');
+        jsonStr = jsonStr.replace(/:\s*\[/g, ':[');
+
+        const parsed = JSON.parse(jsonStr);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.slice(0, numCount).map(q => {
+            let options = Array.isArray(q.options) ? q.options : [q.options || ''];
+            options = options.map(opt => String(opt).trim());
+            while (options.length < 4) {
+              options.push(`Option ${options.length + 1}`);
+            }
+            options = options.slice(0, 4);
+
+            let correctAnswer = String(q.correctAnswer || '').trim();
+            if (!options.includes(correctAnswer)) {
+              correctAnswer = options[0];
+            }
+
+            return {
+              question: String(q.question || '').trim(),
+              options: options,
+              correctAnswer: correctAnswer,
+              explanation: String(q.explanation || '').trim()
+            };
+          });
         }
-      } catch (error) {
-        console.error('Error parsing quiz JSON:', error.message);
       }
-      
-      console.warn('⚠️ FALLBACK: Using mock quiz (Ollama response parsing failed)');
-      return this.getMockQuiz(difficulty, numCount);
     } catch (error) {
       if (error instanceof AppError) throw error;
-      console.error('❌ Ollama API error:', error.message);
-      console.warn('⚠️ FALLBACK: Using mock quiz (Ollama not responding)');
-      return this.getMockQuiz(difficulty, numCount);
+      console.error('❌ Gemini API quiz error:', error.message);
     }
+
+    console.warn('⚠️ FALLBACK: Using mock quiz');
+    return this.getMockQuiz(difficulty, numCount);
   }
 
   async generateRecommendations(weakTopics, performanceData) {
-    try {
-      const prompt = `Based on weak topics: ${weakTopics.join(', ')} and performance data: ${JSON.stringify(performanceData)}, provide 3 personalized learning recommendations in JSON format: [{"topic": "...", "action": "...", "reason": "..."}]`;
-
-      const response = await axios.post(OLLAMA_API, {
-        model: 'mistral',
-        prompt: prompt,
-        stream: false
-      });
-
-      try {
-        const responseText = response.data.response || '';
-        
-        // Remove markdown code blocks
-        let jsonStr = responseText.trim().replace(/```json\n?/g, '').replace(/```\n?/g, '');
-        
-        // Find JSON array
-        const startIdx = jsonStr.indexOf('[');
-        const endIdx = jsonStr.lastIndexOf(']');
-        
-        if (startIdx !== -1 && endIdx !== -1) {
-          jsonStr = jsonStr.substring(startIdx, endIdx + 1);
-          jsonStr = jsonStr.replace(/[\n\r\t]/g, ' ');
-          jsonStr = jsonStr.replace(/,\s*]/g, ']');
-          jsonStr = jsonStr.replace(/,\s*}/g, '}');
-          
-          const parsed = JSON.parse(jsonStr);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            return parsed.map(r => ({
-              topic: String(r.topic || '').trim(),
-              action: String(r.action || '').trim(),
-              reason: String(r.reason || '').trim()
-            }));
-          }
-        }
-      } catch (error) {
-        console.error('Error parsing recommendations:', error.message);
-      }
-      console.warn('⚠️ FALLBACK: Using mock recommendations (Ollama response parsing failed)');
-      return this.getMockRecommendations(weakTopics);
-    } catch (error) {
-      console.error('❌ Ollama API error:', error.message);
-      console.warn('⚠️ FALLBACK: Using mock recommendations (Ollama not responding)');
+    const model = this.getModel();
+    if (!model) {
       return this.getMockRecommendations(weakTopics);
     }
+
+    try {
+      const prompt = `Based on weak topics: ${weakTopics.join(', ')} and performance data: ${JSON.stringify(performanceData)}, provide 3 personalized learning recommendations in JSON format: [{"topic": "...", "action": "...", "reason": "..."}]. Return ONLY valid JSON array.`;
+
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const responseText = response.text() || '';
+
+      // Remove markdown code blocks
+      let jsonStr = responseText.trim().replace(/```json\n?/g, '').replace(/```\n?/g, '');
+
+      // Find JSON array
+      const startIdx = jsonStr.indexOf('[');
+      const endIdx = jsonStr.lastIndexOf(']');
+
+      if (startIdx !== -1 && endIdx !== -1) {
+        jsonStr = jsonStr.substring(startIdx, endIdx + 1);
+        jsonStr = jsonStr.replace(/[\n\r\t]/g, ' ');
+        jsonStr = jsonStr.replace(/,\s*]/g, ']');
+        jsonStr = jsonStr.replace(/,\s*}/g, '}');
+
+        const parsed = JSON.parse(jsonStr);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map(r => ({
+            topic: String(r.topic || '').trim(),
+            action: String(r.action || '').trim(),
+            reason: String(r.reason || '').trim()
+          }));
+        }
+      }
+    } catch (error) {
+      console.error('❌ Gemini API recommendations error:', error.message);
+    }
+
+    return this.getMockRecommendations(weakTopics);
   }
 
   async extractTopics(text) {
+    const model = this.getModel();
+    if (!model) {
+      return this.getMockTopics(text);
+    }
+
     try {
       const prompt = `Extract 5-10 main topics from this text. Return ONLY a JSON array of topic strings, no other text.
 Example: ["Topic1","Topic2","Topic3"]
 
 Text: ${text}`;
 
-      const response = await axios.post(OLLAMA_API, {
-        model: 'mistral',
-        prompt: prompt,
-        stream: false
-      });
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const responseText = response.text() || '';
 
-      try {
-        const responseText = response.data.response || '';
-        
-        // Remove markdown code blocks
-        let jsonStr = responseText.trim().replace(/```json\n?/g, '').replace(/```\n?/g, '');
-        
-        // Find JSON array
-        const startIdx = jsonStr.indexOf('[');
-        const endIdx = jsonStr.lastIndexOf(']');
-        
-        if (startIdx !== -1 && endIdx !== -1) {
-          jsonStr = jsonStr.substring(startIdx, endIdx + 1);
-          jsonStr = jsonStr.replace(/[\n\r\t]/g, ' ');
-          jsonStr = jsonStr.replace(/,\s*]/g, ']');
-          jsonStr = jsonStr.replace(/,\s*}/g, '}');
-          
-          const parsed = JSON.parse(jsonStr);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            return parsed.map(t => String(t).trim());
-          }
+      let jsonStr = responseText.trim().replace(/```json\n?/g, '').replace(/```\n?/g, '');
+
+      const startIdx = jsonStr.indexOf('[');
+      const endIdx = jsonStr.lastIndexOf(']');
+
+      if (startIdx !== -1 && endIdx !== -1) {
+        jsonStr = jsonStr.substring(startIdx, endIdx + 1);
+        jsonStr = jsonStr.replace(/[\n\r\t]/g, ' ');
+        jsonStr = jsonStr.replace(/,\s*]/g, ']');
+        jsonStr = jsonStr.replace(/,\s*}/g, '}');
+
+        const parsed = JSON.parse(jsonStr);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map(t => String(t).trim());
         }
-      } catch (error) {
-        console.error('Error parsing topics:', error.message);
       }
-      
-      console.warn('⚠️ FALLBACK: Using mock topics (Ollama response parsing failed)');
-      return this.getMockTopics(text);
     } catch (error) {
-      console.error('❌ Ollama API error:', error.message);
-      console.warn('⚠️ FALLBACK: Using mock topics (Ollama not responding)');
-      return this.getMockTopics(text);
+      console.error('❌ Gemini API extract topics error:', error.message);
     }
+
+    return this.getMockTopics(text);
   }
 
   async generateContent(userPrompt, systemPrompt = '') {
+    const model = this.getModel();
+    if (!model) {
+      return this.getMockChatResponse(userPrompt);
+    }
+
     try {
       const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${userPrompt}` : userPrompt;
 
-      console.log('🔄 Calling Ollama API at', OLLAMA_API);
-      const response = await axios.post(OLLAMA_API, {
-        model: 'mistral',
-        prompt: fullPrompt,
-        stream: false
-      });
-
-      console.log('✅ Ollama API response received');
-      return response.data.response || '';
+      console.log('🔄 Calling Gemini API...');
+      const result = await model.generateContent(fullPrompt);
+      const response = await result.response;
+      console.log('✅ Gemini API response received');
+      return response.text() || '';
     } catch (error) {
-      console.error('❌ Ollama API error:', error.message);
-      console.warn('⚠️ FALLBACK: Using mock response (Ollama not responding)');
+      console.error('❌ Gemini API error:', error.message);
+      console.warn('⚠️ FALLBACK: Using mock response');
       return this.getMockChatResponse(userPrompt);
     }
   }
@@ -304,25 +295,24 @@ Return ONLY valid JSON matching this exact structure:
   ]
 }`;
 
-      const response = await axios.post(OLLAMA_API, {
-        model: 'mistral',
-        prompt: prompt,
-        stream: false
-      });
-
-      const responseText = response.data.response || '';
-      let jsonStr = responseText.trim().replace(/```json\n?/g, '').replace(/```\n?/g, '');
-      const startIdx = jsonStr.indexOf('{');
-      const endIdx = jsonStr.lastIndexOf('}');
-      if (startIdx !== -1 && endIdx !== -1) {
-        jsonStr = jsonStr.substring(startIdx, endIdx + 1);
-        const parsed = JSON.parse(jsonStr);
-        if (parsed.title && Array.isArray(parsed.learningObjectives) && Array.isArray(parsed.mainConcepts)) {
-          return parsed;
+      const model = this.getModel();
+      if (model) {
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const responseText = response.text() || '';
+        let jsonStr = responseText.trim().replace(/```json\n?/g, '').replace(/```\n?/g, '');
+        const startIdx = jsonStr.indexOf('{');
+        const endIdx = jsonStr.lastIndexOf('}');
+        if (startIdx !== -1 && endIdx !== -1) {
+          jsonStr = jsonStr.substring(startIdx, endIdx + 1);
+          const parsed = JSON.parse(jsonStr);
+          if (parsed.title && Array.isArray(parsed.learningObjectives) && Array.isArray(parsed.mainConcepts)) {
+            return parsed;
+          }
         }
       }
     } catch (err) {
-      console.warn('⚠️ Ollama lecture generation note:', err.message);
+      console.warn('⚠️ Gemini lecture generation note:', err.message);
     }
 
     // High quality deterministic fallback lecture content

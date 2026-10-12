@@ -20,7 +20,7 @@ class ChatbotService {
       // Create context from retrieved content
       const context = ragService.createContext(retrievedContent);
 
-      // Build prompt for Ollama
+      // Build prompt for Gemini
       const systemPrompt = `You are a helpful study assistant chatbot. You help students understand their study materials.
       
 Guidelines:
@@ -37,7 +37,7 @@ Student Question: ${userMessage}
 
 Please answer the question based on the provided materials. If the answer is not in the materials, provide a general explanation but mention that it's not from their materials.`;
 
-      // Get response from Ollama
+      // Get response from Gemini
       console.log('🤖 Calling geminiService.generateContent...');
       const response = await geminiService.generateContent(userPrompt, systemPrompt);
       console.log('✅ Got response from geminiService');

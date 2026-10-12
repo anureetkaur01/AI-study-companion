@@ -50,16 +50,10 @@ Return ONLY a valid JSON array, no other text. Example:
 
 Text: ${text.substring(0, 3000)}`;
 
-      const OLLAMA_API = 'http://localhost:11434/api/generate';
-      const response = await axios.post(OLLAMA_API, {
-        model: 'mistral',
-        prompt: prompt,
-        stream: false
-      }, {
-        timeout: 60000
-      });
-
-      const responseText = response.data.response || '';
+      const responseText = await geminiService.generateContent(
+        prompt,
+        'You are an educational assistant that outputs only valid JSON arrays.'
+      );
       
       // Parse JSON
       let jsonStr = responseText.trim();

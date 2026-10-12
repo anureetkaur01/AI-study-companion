@@ -67,7 +67,7 @@ export class ExtractionService {
   // Generate summary from text
   async generateSummary(text) {
     try {
-      // This will use the Ollama service to generate summary
+      // This will use the Gemini service to generate summary
       // Import geminiService and use it
       const summary = text.substring(0, 500) + '...'; // Placeholder
       return summary;

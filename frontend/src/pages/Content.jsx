@@ -554,7 +554,7 @@ export const Content = () => {
               </p>
               <div className="space-y-2 text-sm text-text-secondary">
                 <p>This may take 10-15 seconds</p>
-                <p>Please wait while Ollama processes</p>
+                <p>Please wait while Gemini processes</p>
               </div>
             </div>
           </Card>

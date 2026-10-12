@@ -132,7 +132,7 @@ export const Home = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {[
               { title: 'Frontend', items: ['React 18', 'Tailwind CSS', 'Framer Motion', 'Recharts'] },
-              { title: 'Backend', items: ['Node.js + Express', 'JWT Auth', 'Multer Upload', 'Ollama AI'] },
+              { title: 'Backend', items: ['Node.js + Express', 'JWT Auth', 'Multer Upload', 'Gemini AI'] },
               { title: 'Database', items: ['MongoDB', 'User Management', 'Quiz Storage', 'Analytics'] }
             ].map((section, idx) => (
               <div key={idx} className="bg-white border border-border rounded-lg p-6">
