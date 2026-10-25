@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Card } from '../components/Card';
@@ -17,21 +17,77 @@ export const Pomodoro = () => {
   const [todayStats, setTodayStats] = useState(null);
   const [weeklyStats, setWeeklyStats] = useState(null);
 
+  const endTimeRef = useRef(null);
+
   useEffect(() => {
     fetchTopics();
     fetchTodayStats();
     fetchWeeklyStats();
+
+    // Restore any active running session from localStorage
+    const savedEndTime = localStorage.getItem('pomodoro_endTime');
+    const savedSession = localStorage.getItem('pomodoro_session');
+    const savedIsBreak = localStorage.getItem('pomodoro_isBreak') === 'true';
+    const savedDuration = Number(localStorage.getItem('pomodoro_duration')) || 25;
+
+    if (savedEndTime && savedSession) {
+      const remaining = Math.round((Number(savedEndTime) - Date.now()) / 1000);
+      try {
+        const parsedSession = JSON.parse(savedSession);
+        setCurrentSession(parsedSession);
+        setIsBreak(savedIsBreak);
+        setDuration(savedDuration);
+        if (remaining > 0) {
+          endTimeRef.current = Number(savedEndTime);
+          setTimeLeft(remaining);
+          setIsRunning(true);
+        } else {
+          // Finished while away
+          setTimeLeft(0);
+          setIsRunning(false);
+          handleCompletedSession(parsedSession, savedIsBreak);
+        }
+      } catch (e) {
+        localStorage.removeItem('pomodoro_endTime');
+        localStorage.removeItem('pomodoro_session');
+      }
+    }
   }, []);
 
+  // Wall-clock synchronized timer that survives tab switching & browser throttling
   useEffect(() => {
-    let interval = null;
-    if (isRunning && timeLeft > 0) {
-      interval = setInterval(() => setTimeLeft(time => time - 1), 1000);
-    } else if (timeLeft === 0) {
-      handleTimerComplete();
-    }
-    return () => clearInterval(interval);
-  }, [isRunning, timeLeft]);
+    if (!isRunning) return;
+
+    const checkTime = () => {
+      if (!endTimeRef.current) return;
+      const remaining = Math.max(0, Math.round((endTimeRef.current - Date.now()) / 1000));
+      setTimeLeft(remaining);
+
+      if (remaining <= 0) {
+        handleTimerComplete();
+      }
+    };
+
+    // Immediate sync
+    checkTime();
+
+    // Interval every 500ms for smooth display
+    const interval = setInterval(checkTime, 500);
+
+    // Sync immediately whenever tab becomes visible or receives focus
+    const handleSync = () => {
+      checkTime();
+    };
+
+    document.addEventListener('visibilitychange', handleSync);
+    window.addEventListener('focus', handleSync);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleSync);
+      window.removeEventListener('focus', handleSync);
+    };
+  }, [isRunning, currentSession, isBreak]);
 
   const fetchTopics = async () => {
     try {
@@ -63,40 +119,77 @@ export const Pomodoro = () => {
   const startTimer = async () => {
     try {
       const res = await client.post('/study-sessions/start', {
-        topic: selectedTopic || 'General Study', // Default to 'General Study' if no topic selected
+        topic: selectedTopic || 'General Study',
         duration,
         type: isBreak ? 'break' : 'focus'
       });
-      setCurrentSession(res.data.data);
-      setTimeLeft(duration * 60);
+      const session = res.data.data;
+      const totalSeconds = duration * 60;
+      const targetEndTime = Date.now() + totalSeconds * 1000;
+
+      endTimeRef.current = targetEndTime;
+      localStorage.setItem('pomodoro_endTime', targetEndTime.toString());
+      localStorage.setItem('pomodoro_session', JSON.stringify(session));
+      localStorage.setItem('pomodoro_isBreak', String(isBreak));
+      localStorage.setItem('pomodoro_duration', String(duration));
+
+      setCurrentSession(session);
+      setTimeLeft(totalSeconds);
       setIsRunning(true);
     } catch (error) {
       alert('Failed to start session');
     }
   };
 
-  const handleTimerComplete = async () => {
+  const handleCompletedSession = async (session, breakStatus) => {
+    localStorage.removeItem('pomodoro_endTime');
+    localStorage.removeItem('pomodoro_session');
+    endTimeRef.current = null;
     setIsRunning(false);
-    
-    if (currentSession) {
+
+    if (session) {
       try {
-        await client.post(`/study-sessions/${currentSession._id}/complete`);
+        await client.post(`/study-sessions/${session._id}/complete`);
         fetchTodayStats();
         fetchWeeklyStats();
-        alert(isBreak ? 'Break complete! Ready to focus?' : 'Session complete! Take a break?');
+        alert(breakStatus ? '🎉 Break complete! Ready to focus?' : '🏆 Focus session complete! Great job maintaining your streak. Take a break?');
       } catch (error) {
         console.error('Failed to complete session:', error);
       }
     }
-    
-    setIsBreak(!isBreak);
-    setDuration(isBreak ? 25 : 5);
-    setTimeLeft((isBreak ? 25 : 5) * 60);
+
+    const nextIsBreak = !breakStatus;
+    const nextDuration = nextIsBreak ? 5 : 25;
+    setIsBreak(nextIsBreak);
+    setDuration(nextDuration);
+    setTimeLeft(nextDuration * 60);
     setCurrentSession(null);
+  };
+
+  const handleTimerComplete = async () => {
+    await handleCompletedSession(currentSession, isBreak);
+  };
+
+  const togglePauseResume = () => {
+    if (isRunning) {
+      // Pause
+      setIsRunning(false);
+      localStorage.removeItem('pomodoro_endTime');
+      endTimeRef.current = null;
+    } else {
+      // Resume with remaining timeLeft
+      const targetEndTime = Date.now() + timeLeft * 1000;
+      endTimeRef.current = targetEndTime;
+      localStorage.setItem('pomodoro_endTime', targetEndTime.toString());
+      setIsRunning(true);
+    }
   };
 
   const resetTimer = () => {
     setIsRunning(false);
+    endTimeRef.current = null;
+    localStorage.removeItem('pomodoro_endTime');
+    localStorage.removeItem('pomodoro_session');
     setTimeLeft(duration * 60);
     setCurrentSession(null);
   };
@@ -187,7 +280,7 @@ export const Pomodoro = () => {
             {currentSession && (
               <div className="flex gap-3">
                 <Button
-                  onClick={() => setIsRunning(!isRunning)}
+                  onClick={togglePauseResume}
                   variant={isRunning ? 'secondary' : 'primary'}
                   className="flex-1"
                 >

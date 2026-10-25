@@ -16,6 +16,10 @@ const userSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'StudentProfile'
   },
+  teacherProfile: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'TeacherProfile'
+  },
   createdAt: { type: Date, default: Date.now }
 });
 

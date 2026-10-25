@@ -4,6 +4,7 @@ import User from '../models/User.js';
 import StudentProfile from '../models/StudentProfile.js';
 import geminiService from './geminiService.js';
 import topicProgressService from './topicProgressService.js';
+import streakService from './streakService.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { validateQuestionCount, calculateQuizScore } from '../utils/validators.js';
 
@@ -24,6 +25,10 @@ export class QuizService {
       throw new AppError('Access denied to private study material', 403);
     }
 
+    // Get previous quizzes for this user & content to exclude duplicate questions!
+    const previousQuizzes = await Quiz.find({ userId, contentId }).sort({ createdAt: -1 }).limit(5);
+    const excludeQuestions = previousQuizzes.flatMap(q => (q.questions || []).map(item => item.question));
+
     // Get weak topics for adaptive generation
     const weakTopics = await topicProgressService.getWeakTopics(userId);
     const weakTopicNames = weakTopics.map(t => t.topic);
@@ -34,7 +39,10 @@ export class QuizService {
       prompt = `Generate quiz questions. Focus more on these weak topics: ${weakTopicNames.join(', ')}\n\nContent: ${prompt}`;
     }
 
-    const questions = await geminiService.generateQuiz(prompt, difficulty, numCount);
+    const questions = await geminiService.generateQuiz(prompt, difficulty, numCount, {
+      excludeQuestions,
+      title: content.title
+    });
     
     const quiz = new Quiz({
       userId,
@@ -114,6 +122,9 @@ export class QuizService {
       profile.lastActiveAt = new Date();
       await profile.save();
     }
+
+    // Record study activity to advance streak
+    await streakService.recordStudyActivity(userId);
 
     console.log(`✅ Quiz ${quizId} completed: ${score}/${quiz.questions.length} (${quiz.accuracy}%)`);
     return quiz;

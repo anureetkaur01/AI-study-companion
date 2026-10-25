@@ -9,6 +9,7 @@ import { AppError } from '../middleware/errorHandler.js';
 import axios from 'axios';
 import Content from '../models/Content.js';
 import fs from 'fs';
+import pdfParse from 'pdf-parse';
 
 const router = express.Router();
 
@@ -56,7 +57,19 @@ router.post('/upload', authenticate, async (req, res, next) => {
       if (!pdfUrl || !pdfUrl.trim()) {
         throw new AppError('Missing PDF URL', 400);
       }
-      contentText = `PDF Document: ${title}\n\nURL: ${pdfUrl}\n\nNote: PDF content extraction is in progress. The AI will analyze the document and generate questions based on the content.`;
+      try {
+        const pdfRes = await axios.get(pdfUrl.trim(), { responseType: 'arraybuffer', timeout: 8000 });
+        const pdfData = await pdfParse(Buffer.from(pdfRes.data));
+        if (pdfData && pdfData.text && pdfData.text.trim().length > 30) {
+          contentText = pdfData.text;
+          console.log(`✅ Extracted ${contentText.length} characters from PDF URL`);
+        } else {
+          contentText = `PDF Document: ${title}\nURL: ${pdfUrl}`;
+        }
+      } catch (pdfErr) {
+        console.warn('⚠️ Could not extract text directly from PDF URL, using title context:', pdfErr.message);
+        contentText = `PDF Document: ${title}\nURL: ${pdfUrl}\nTopic: ${title}`;
+      }
     }
     // Handle YouTube URL
     else if (contentType === 'youtube') {

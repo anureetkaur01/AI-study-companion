@@ -4,38 +4,35 @@ import Content from '../models/Content.js';
 import { AppError } from '../middleware/errorHandler.js';
 
 class ChatbotService {
-  async processMessage(userId, userMessage, contentIds = null) {
+  async processMessage(userId, userMessage, contentId = null) {
     try {
-
       if (!userMessage || userMessage.trim().length === 0) {
         throw new AppError('Message cannot be empty', 400);
       }
 
       console.log(`📨 Processing message for user ${userId}: "${userMessage.substring(0, 50)}..."`);
 
-      // Retrieve relevant content from user's materials
-      const retrievedContent = await ragService.retrieveRelevantContent(userId, userMessage);
+      // Retrieve relevant content from user's materials (optionally focused on target material)
+      const retrievedContent = await ragService.retrieveRelevantContent(userId, userMessage, 5, contentId);
       console.log(`📚 Retrieved ${retrievedContent.length} relevant content items`);
 
       // Create context from retrieved content
       const context = ragService.createContext(retrievedContent);
 
       // Build prompt for Gemini
-      const systemPrompt = `You are a helpful study assistant chatbot. You help students understand their study materials.
-      
+      const systemPrompt = `You are an expert AI study companion and academic tutor. Your mission is to provide clear, accurate, and deeply insightful answers to help students and educators master their study materials.
+
 Guidelines:
-- Answer questions based on the provided study materials
-- Be concise and clear
-- Use examples when helpful
-- If information is not in the materials, say so
-- Encourage deeper learning
-- Keep responses to 2-3 paragraphs max`;
+- First, analyze the provided study material excerpts. If the concept is found in their materials, explain it thoroughly referencing their material.
+- If the student asks for broader details, examples, or if the question touches concepts not fully explained in the excerpt, provide an authoritative, clear explanation.
+- Use clear markdown formatting with bold terms, bullet points, and code/formulas where helpful.
+- Keep the explanation engaging, accurate, and exam-ready.`;
 
       const userPrompt = `${context}
 
-Student Question: ${userMessage}
+User Question: ${userMessage}
 
-Please answer the question based on the provided materials. If the answer is not in the materials, provide a general explanation but mention that it's not from their materials.`;
+Please answer the question thoroughly based on the study materials provided above.`;
 
       // Get response from Gemini
       console.log('🤖 Calling geminiService.generateContent...');

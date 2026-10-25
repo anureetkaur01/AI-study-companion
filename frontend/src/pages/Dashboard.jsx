@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { 
   Zap, Flame, BookOpen, TrendingUp, Presentation, FileText, CheckCircle2, 
-  Clock, ArrowRight, Sparkles, Download, Award, AlertCircle 
+  Clock, ArrowRight, Sparkles, Download, Award, AlertCircle, MessageCircle 
 } from 'lucide-react';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
@@ -21,6 +21,7 @@ export const Dashboard = () => {
   const [lectures, setLectures] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [generatingQuizId, setGeneratingQuizId] = useState(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -77,6 +78,50 @@ export const Dashboard = () => {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       alert(`Failed to download ${format.toUpperCase()}: ${err.message}`);
+    }
+  };
+
+  const handleQuickQuiz = async (contentId, e) => {
+    if (e) e.stopPropagation();
+    setGeneratingQuizId(contentId);
+    try {
+      const res = await client.post('/quiz/generate', { 
+        contentId,
+        count: 5,
+        difficulty: 'medium'
+      });
+      if (res.data.data && res.data.data._id) {
+        localStorage.setItem('currentQuiz', JSON.stringify(res.data.data));
+        navigate('/quiz', { state: { quiz: res.data.data } });
+      }
+    } catch (err) {
+      alert('Failed to generate quiz: ' + (err.response?.data?.error?.message || err.message));
+    } finally {
+      setGeneratingQuizId(null);
+    }
+  };
+
+  const handleDownloadAnki = async (item, e, format = 'anki') => {
+    if (e) e.stopPropagation();
+    try {
+      const endpoint = format === 'structured'
+        ? `/flashcards/export/anki?contentId=${item._id}&format=structured`
+        : `/flashcards/export/anki?contentId=${item._id}`;
+      
+      const response = await client.get(endpoint, { responseType: 'blob' });
+      const blob = new Blob([response.data], { type: 'text/plain;charset=utf-8' });
+      const safeTitle = (item.title || 'flashcards').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const filename = format === 'structured' ? `${safeTitle}_structured_cards.txt` : `${safeTitle}_anki_deck.txt`;
+      
+      const link = document.createElement('a');
+      link.href = window.URL.createObjectURL(blob);
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(link.href);
+    } catch (err) {
+      alert('Failed to export flashcards: ' + (err.response?.data?.error?.message || err.message));
     }
   };
 
@@ -260,13 +305,23 @@ export const Dashboard = () => {
             <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
               <Presentation className="w-5 h-5 text-primary" /> Generated Lecture Decks & Handouts
             </h2>
-            <Button
-              variant="secondary"
-              onClick={() => navigate('/teacher/lectures')}
-              className="text-xs font-semibold"
-            >
-              Open Lecture Studio →
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => navigate('/chatbot')}
+                className="text-xs font-semibold"
+              >
+                <MessageCircle className="w-4 h-4 mr-1.5 inline text-primary" />
+                Chat with AI
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => navigate('/teacher/lectures')}
+                className="text-xs font-semibold"
+              >
+                Open Lecture Studio →
+              </Button>
+            </div>
           </div>
 
           {lectures.length > 0 ? (
@@ -410,18 +465,49 @@ export const Dashboard = () => {
                     onClick={() => navigate('/content')}
                   >
                     <div className="flex items-center justify-between">
-                      <div className="space-y-0.5">
+                      <div className="space-y-0.5 max-w-[65%]">
                         <h4 className="font-bold text-sm text-gray-900 line-clamp-1">{item.title}</h4>
                         <p className="text-xs text-gray-400 capitalize">
                           Format: {item.type.toUpperCase()} • {new Date(item.createdAt).toLocaleDateString()}
                         </p>
                       </div>
-                      <div className="flex items-center gap-2">
-                        {item.summaries?.brief && (
-                          <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-50 text-blue-700 rounded border border-blue-200">
-                            Summary Ready
-                          </span>
-                        )}
+                      <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/chatbot?materialId=${item._id}`);
+                          }}
+                          className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold rounded-lg border border-emerald-200 flex items-center gap-1 transition-colors"
+                          title="Chat with AI about this study material"
+                        >
+                          <MessageCircle className="w-3.5 h-3.5 text-emerald-600" />
+                          Chat
+                        </button>
+                        <button
+                          onClick={(e) => handleQuickQuiz(item._id, e)}
+                          disabled={generatingQuizId !== null}
+                          className="px-2.5 py-1 bg-primary/10 hover:bg-primary/20 text-primary text-xs font-bold rounded-lg border border-primary/20 flex items-center gap-1 transition-colors"
+                          title="Generate Practice Quiz for this material"
+                        >
+                          <Zap className="w-3.5 h-3.5" />
+                          {generatingQuizId === item._id ? 'Generating...' : 'Quiz'}
+                        </button>
+                        <button
+                          onClick={(e) => handleDownloadAnki(item, e, 'anki')}
+                          className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-bold rounded-lg border border-amber-200 flex items-center gap-1 transition-colors"
+                          title="Export Anki deck (.txt)"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          Anki
+                        </button>
+                        <button
+                          onClick={(e) => handleDownloadAnki(item, e, 'structured')}
+                          className="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold rounded-lg border border-blue-200 flex items-center gap-1 transition-colors"
+                          title="Download structured study flashcards (.txt)"
+                        >
+                          <FileText className="w-3.5 h-3.5" />
+                          Notes
+                        </button>
                         <ArrowRight className="w-4 h-4 text-gray-400" />
                       </div>
                     </div>

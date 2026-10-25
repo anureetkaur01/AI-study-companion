@@ -7,11 +7,16 @@ const router = express.Router();
 // Generate flashcards from content
 router.post('/generate', authenticate, async (req, res, next) => {
   try {
-    const { contentId, count } = req.body;
+    const { contentId, count, forceRegenerate } = req.body;
     if (!contentId) {
       return res.status(400).json({ success: false, error: { message: 'Content ID is required' } });
     }
-    const flashcards = await flashcardService.generateFlashcards(req.userId, contentId, count || 10);
+    const flashcards = await flashcardService.generateFlashcards(
+      req.userId,
+      contentId,
+      Number(count) || 15,
+      Boolean(forceRegenerate)
+    );
     res.json({ success: true, data: flashcards });
   } catch (error) {
     next(error);
@@ -63,15 +68,35 @@ router.delete('/content/:contentId', authenticate, async (req, res, next) => {
   }
 });
 
-// Export to Anki format
+// Export to Anki or Structured format
 router.get('/export/anki', authenticate, async (req, res, next) => {
   try {
-    const { contentId } = req.query;
-    const ankiText = await flashcardService.exportToAnki(req.userId, contentId);
+    const { contentId, format } = req.query;
     
-    res.setHeader('Content-Type', 'text/plain');
-    res.setHeader('Content-Disposition', 'attachment; filename="flashcards.txt"');
+    if (format === 'structured') {
+      const structuredText = await flashcardService.exportStructured(req.userId, contentId);
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="flashcards_structured.txt"');
+      return res.send(structuredText);
+    }
+
+    const ankiText = await flashcardService.exportToAnki(req.userId, contentId);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="flashcards_anki.txt"');
     res.send(ankiText);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Dedicated structured study deck export
+router.get('/export/structured', authenticate, async (req, res, next) => {
+  try {
+    const { contentId } = req.query;
+    const structuredText = await flashcardService.exportStructured(req.userId, contentId);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="flashcards_structured.txt"');
+    res.send(structuredText);
   } catch (error) {
     next(error);
   }

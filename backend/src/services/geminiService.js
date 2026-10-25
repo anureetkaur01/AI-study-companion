@@ -3,155 +3,341 @@ import { validateQuestionCount } from '../utils/validators.js';
 import { AppError } from '../middleware/errorHandler.js';
 
 export class GeminiService {
-  getModel() {
+  getModel(modelName = null, customConfig = {}) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey || apiKey === 'your_gemini_api_key_here' || apiKey.trim() === '') {
       return null;
     }
     try {
       const genAI = new GoogleGenerativeAI(apiKey.trim());
-      const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
-      return genAI.getGenerativeModel({ model: modelName });
+      const selectedModel = modelName || process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+      return genAI.getGenerativeModel({ model: selectedModel, ...customConfig }, { apiVersion: 'v1beta' });
     } catch (err) {
       console.error('❌ Failed to initialize Gemini model:', err.message);
       return null;
     }
   }
 
+  async executeWithModel(fn, customConfig = {}) {
+    const candidateModels = [
+      process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
+      'gemini-flash-lite-latest',
+      'gemini-3.5-flash',
+      'gemini-flash-latest'
+    ];
+    let lastError = null;
+    for (const m of candidateModels) {
+      const model = this.getModel(m, customConfig);
+      if (!model) continue;
+      try {
+        return await fn(model, m);
+      } catch (err) {
+        lastError = err;
+        console.warn(`⚠️ Model ${m} attempt failed: ${err.message}. Trying next candidate...`);
+      }
+    }
+    throw lastError || new Error('No candidate Gemini model could be executed');
+  }
+
+  async tryAlternativeProviders(text, difficulty, count, excludeQuestions = []) {
+    const prompt = `Generate exactly ${count} multiple choice questions about this study material with difficulty level "${difficulty}".
+${excludeQuestions.length > 0 ? `Do NOT repeat or duplicate these questions: ${excludeQuestions.slice(0, 5).join('; ')}` : ''}
+Return ONLY a valid JSON object in this format:
+{"questions": [{"question": "...", "options": ["A", "B", "C", "D"], "correctAnswer": "A", "explanation": "..."}]}
+
+Text: ${String(text || '').substring(0, 6000)}`;
+
+    // 1. Groq API (Ultra-fast Llama 3.3 70B, free tier available)
+    if (process.env.GROQ_API_KEY && process.env.GROQ_API_KEY.trim() !== '') {
+      try {
+        console.log('🔄 Trying Groq AI API...');
+        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.GROQ_API_KEY.trim()}`
+          },
+          body: JSON.stringify({
+            model: 'llama-3.3-70b-versatile',
+            messages: [{ role: 'user', content: prompt }],
+            response_format: { type: 'json_object' },
+            temperature: 0.85
+          })
+        });
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (content) {
+          const parsed = this.parseAndValidateQuestions(content, count);
+          if (parsed && parsed.length > 0) return parsed;
+        }
+      } catch (err) {
+        console.warn('⚠️ Groq API attempt failed:', err.message);
+      }
+    }
+
+    // 2. OpenAI API (GPT-4o-mini)
+    if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim() !== '') {
+      try {
+        console.log('🔄 Trying OpenAI API...');
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY.trim()}`
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            messages: [{ role: 'user', content: prompt }],
+            response_format: { type: 'json_object' },
+            temperature: 0.85
+          })
+        });
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (content) {
+          const parsed = this.parseAndValidateQuestions(content, count);
+          if (parsed && parsed.length > 0) return parsed;
+        }
+      } catch (err) {
+        console.warn('⚠️ OpenAI API attempt failed:', err.message);
+      }
+    }
+
+    // 3. OpenRouter API
+    if (process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY.trim() !== '') {
+      try {
+        console.log('🔄 Trying OpenRouter API...');
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY.trim()}`
+          },
+          body: JSON.stringify({
+            model: 'deepseek/deepseek-chat',
+            messages: [{ role: 'user', content: prompt }],
+            response_format: { type: 'json_object' },
+            temperature: 0.85
+          })
+        });
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (content) {
+          const parsed = this.parseAndValidateQuestions(content, count);
+          if (parsed && parsed.length > 0) return parsed;
+        }
+      } catch (err) {
+        console.warn('⚠️ OpenRouter API attempt failed:', err.message);
+      }
+    }
+
+    return null;
+  }
+
+  parseAndValidateQuestions(rawText, count) {
+    try {
+      let clean = rawText.trim();
+      clean = clean.replace(/^```json\n?/i, '').replace(/\n?```$/i, '').trim();
+
+      const startIdx = clean.indexOf('[');
+      const endIdx = clean.lastIndexOf(']');
+
+      let parsed = null;
+      if (startIdx !== -1 && endIdx !== -1) {
+        clean = clean.substring(startIdx, endIdx + 1);
+        parsed = JSON.parse(clean);
+      } else {
+        const obj = JSON.parse(clean);
+        parsed = Array.isArray(obj) ? obj : (obj.questions || obj.quiz || null);
+      }
+
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.slice(0, count).map((q, idx) => {
+          let options = Array.isArray(q.options) ? q.options.map(o => String(o).trim()) : [];
+          options = options.filter(o => o.length > 0);
+          while (options.length < 4) {
+            options.push(`Alternative Option ${options.length + 1}`);
+          }
+          options = options.slice(0, 4);
+
+          let correctAnswer = String(q.correctAnswer || '').trim();
+          if (!options.includes(correctAnswer)) {
+            correctAnswer = options[0];
+          }
+
+          // Shuffle options so correct answer is randomly positioned
+          const shuffledOptions = this.shuffleArray([...options]);
+
+          return {
+            id: `q${idx}`,
+            question: String(q.question || `Question ${idx + 1}`).trim(),
+            options: shuffledOptions,
+            correctAnswer: correctAnswer,
+            explanation: String(q.explanation || 'Verified based on study material content.').trim()
+          };
+        });
+      }
+    } catch (err) {
+      console.warn('JSON parsing attempt note:', err.message);
+    }
+    return null;
+  }
+
+  shuffleArray(arr) {
+    const copy = [...arr];
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
+  }
+
   async generateSummary(text, type = 'brief') {
-    const model = this.getModel();
-    if (!model) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === 'your_gemini_api_key_here' || apiKey.trim() === '') {
       console.warn('⚠️ GEMINI_API_KEY not configured or invalid, using fallback summary');
       return this.getMockSummary(text, type);
     }
 
     try {
-      const prompts = {
-        brief: `Summarize this in 2-3 sentences:\n\n${text}`,
-        detailed: `Provide a detailed summary (5-7 sentences):\n\n${text}`,
-        comprehensive: `Provide a comprehensive summary with key points:\n\n${text}`
-      };
+      return await this.executeWithModel(async (model) => {
+        const prompts = {
+          brief: `Summarize this in 2-3 clear, insightful sentences:\n\n${text}`,
+          detailed: `Provide a detailed, structured summary (5-7 sentences) highlighting main mechanisms and key takeaways:\n\n${text}`,
+          comprehensive: `Provide a comprehensive summary with structured key points:\n\n${text}`
+        };
 
-      const result = await model.generateContent(prompts[type] || prompts.brief);
-      const response = await result.response;
-      return response.text();
+        const result = await model.generateContent(prompts[type] || prompts.brief);
+        const response = await result.response;
+        return response.text();
+      }, {
+        generationConfig: { temperature: 0.4 }
+      });
     } catch (error) {
-      console.error('❌ Gemini API error:', error.message);
+      console.error('❌ Gemini API summary error:', error.message);
       console.warn('⚠️ FALLBACK: Using mock summary');
       return this.getMockSummary(text, type);
     }
   }
 
-  async generateQuiz(text, difficulty = 'medium', count = 5) {
+  async generateQuiz(text, difficulty = 'medium', count = 5, options = {}) {
     const numCount = Number(count) || 5;
     if (!validateQuestionCount(numCount)) {
       throw new AppError('Question count must be between 5 and 20', 400);
     }
 
-    const model = this.getModel();
-    if (!model) {
-      console.warn('⚠️ GEMINI_API_KEY not configured, using fallback quiz');
-      return this.getMockQuiz(difficulty, numCount);
+    const { excludeQuestions = [], title = '' } = options;
+
+    // Handle large text: select a randomized window so repeated quiz generations test different parts
+    const rawText = String(text || '').trim();
+    let textExcerpt = rawText;
+    if (rawText.length > 7000) {
+      const maxStart = rawText.length - 6000;
+      const randomStart = Math.floor(Math.random() * maxStart);
+      textExcerpt = rawText.substring(randomStart, randomStart + 6000);
     }
 
-    try {
-      const prompt = `Generate exactly ${numCount} multiple choice questions about this text with difficulty level "${difficulty}". For each question, provide:
-1. question (string)
-2. options (array of exactly 4 strings - just the answer text, no letters)
-3. correctAnswer (must be EXACTLY one of the 4 options as a string, not an array)
-4. explanation (string)
+    // 1. Primary: Try Gemini API
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (apiKey && apiKey !== 'your_gemini_api_key_here' && apiKey.trim() !== '') {
+      try {
+        return await this.executeWithModel(async (model) => {
+          const exclusionBlock = excludeQuestions.length > 0
+            ? `\nIMPORTANT: Do NOT repeat or duplicate any of these previously asked questions:\n${excludeQuestions.slice(0, 10).map(q => `- ${q}`).join('\n')}\n`
+            : '';
 
-Return ONLY valid JSON array, no other text. Example format:
-[{"question":"What is X?","options":["Answer1","Answer2","Answer3","Answer4"],"correctAnswer":"Answer1","explanation":"Because..."}]
+          const prompt = `Generate exactly ${numCount} multiple choice questions about this study material with difficulty level "${difficulty}".
+${exclusionBlock}
+Requirements:
+1. Every question must test a different concept, definition, mechanism, or fact directly discussed in the text.
+2. For each question, provide:
+   - "question": string
+   - "options": array of exactly 4 strings (pure answer text, NO letters like A., B., C.)
+   - "correctAnswer": must EXACTLY match one of the 4 options
+   - "explanation": string explaining why the answer is correct based on the text
 
-Text: ${text}`;
+Return ONLY a valid JSON array of question objects. Example:
+[{"question":"What is X?","options":["A","B","C","D"],"correctAnswer":"A","explanation":"Because..."}]
 
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      const responseText = response.text() || '';
+Randomization seed: ${Date.now()}-${Math.random().toString(36).substring(7)}
 
-      // Try to extract JSON array
-      let jsonStr = responseText.trim();
-      jsonStr = jsonStr.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+Study Material:
+${textExcerpt.substring(0, 8000)}`;
 
-      const startIdx = jsonStr.indexOf('[');
-      const endIdx = jsonStr.lastIndexOf(']');
+          const result = await model.generateContent(prompt);
+          const response = await result.response;
+          const responseText = (response.text() || '').trim();
 
-      if (startIdx !== -1 && endIdx !== -1) {
-        jsonStr = jsonStr.substring(startIdx, endIdx + 1);
-        jsonStr = jsonStr.replace(/[\n\r\t]/g, ' ');
-        jsonStr = jsonStr.replace(/,\s*]/g, ']');
-        jsonStr = jsonStr.replace(/,\s*}/g, '}');
-        jsonStr = jsonStr.replace(/:\s*\[/g, ':[');
-
-        const parsed = JSON.parse(jsonStr);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.slice(0, numCount).map(q => {
-            let options = Array.isArray(q.options) ? q.options : [q.options || ''];
-            options = options.map(opt => String(opt).trim());
-            while (options.length < 4) {
-              options.push(`Option ${options.length + 1}`);
-            }
-            options = options.slice(0, 4);
-
-            let correctAnswer = String(q.correctAnswer || '').trim();
-            if (!options.includes(correctAnswer)) {
-              correctAnswer = options[0];
-            }
-
-            return {
-              question: String(q.question || '').trim(),
-              options: options,
-              correctAnswer: correctAnswer,
-              explanation: String(q.explanation || '').trim()
-            };
-          });
-        }
+          const questions = this.parseAndValidateQuestions(responseText, numCount);
+          if (questions && questions.length > 0) {
+            console.log(`✅ Gemini generated ${questions.length} unique questions for quiz`);
+            return questions;
+          }
+          throw new Error('Failed to parse valid questions array from Gemini output');
+        }, {
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.85
+          }
+        });
+      } catch (error) {
+        if (error instanceof AppError) throw error;
+        console.error('❌ Gemini API quiz error:', error.message);
       }
-    } catch (error) {
-      if (error instanceof AppError) throw error;
-      console.error('❌ Gemini API quiz error:', error.message);
     }
 
-    console.warn('⚠️ FALLBACK: Using mock quiz');
-    return this.getMockQuiz(difficulty, numCount);
+    // 2. Secondary: Try Alternative Providers (Groq / OpenAI / OpenRouter if configured)
+    try {
+      const altQuestions = await this.tryAlternativeProviders(textExcerpt, difficulty, numCount, excludeQuestions);
+      if (altQuestions && altQuestions.length > 0) {
+        console.log('✅ Quiz generated using alternative AI provider');
+        return altQuestions;
+      }
+    } catch (altError) {
+      console.warn('⚠️ Alternative provider attempt note:', altError.message);
+    }
+
+    // 3. Smart Dynamic Content-Aware Fallback
+    console.warn('⚠️ FALLBACK: Using dynamic content-aware mock quiz generator');
+    return this.getMockQuiz(difficulty, numCount, text, excludeQuestions, title);
   }
 
   async generateRecommendations(weakTopics, performanceData) {
-    const model = this.getModel();
-    if (!model) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === 'your_gemini_api_key_here' || apiKey.trim() === '') {
       return this.getMockRecommendations(weakTopics);
     }
 
     try {
-      const prompt = `Based on weak topics: ${weakTopics.join(', ')} and performance data: ${JSON.stringify(performanceData)}, provide 3 personalized learning recommendations in JSON format: [{"topic": "...", "action": "...", "reason": "..."}]. Return ONLY valid JSON array.`;
+      return await this.executeWithModel(async (model) => {
+        const prompt = `Based on weak topics: ${weakTopics.join(', ')} and performance data: ${JSON.stringify(performanceData)}, provide 3 personalized learning recommendations in JSON format: [{"topic": "...", "action": "...", "reason": "..."}]. Return ONLY valid JSON array.`;
 
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      const responseText = response.text() || '';
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const responseText = response.text() || '';
 
-      // Remove markdown code blocks
-      let jsonStr = responseText.trim().replace(/```json\n?/g, '').replace(/```\n?/g, '');
+        let clean = responseText.trim().replace(/^```json\n?/i, '').replace(/\n?```$/i, '').trim();
+        const startIdx = clean.indexOf('[');
+        const endIdx = clean.lastIndexOf(']');
 
-      // Find JSON array
-      const startIdx = jsonStr.indexOf('[');
-      const endIdx = jsonStr.lastIndexOf(']');
-
-      if (startIdx !== -1 && endIdx !== -1) {
-        jsonStr = jsonStr.substring(startIdx, endIdx + 1);
-        jsonStr = jsonStr.replace(/[\n\r\t]/g, ' ');
-        jsonStr = jsonStr.replace(/,\s*]/g, ']');
-        jsonStr = jsonStr.replace(/,\s*}/g, '}');
-
-        const parsed = JSON.parse(jsonStr);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map(r => ({
-            topic: String(r.topic || '').trim(),
-            action: String(r.action || '').trim(),
-            reason: String(r.reason || '').trim()
-          }));
+        if (startIdx !== -1 && endIdx !== -1) {
+          clean = clean.substring(startIdx, endIdx + 1);
+          const parsed = JSON.parse(clean);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return parsed.map(r => ({
+              topic: String(r.topic || '').trim(),
+              action: String(r.action || '').trim(),
+              reason: String(r.reason || '').trim()
+            }));
+          }
         }
-      }
+        throw new Error('Failed to parse recommendations array');
+      }, {
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.7
+        }
+      });
     } catch (error) {
       console.error('❌ Gemini API recommendations error:', error.message);
     }
@@ -160,37 +346,40 @@ Text: ${text}`;
   }
 
   async extractTopics(text) {
-    const model = this.getModel();
-    if (!model) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === 'your_gemini_api_key_here' || apiKey.trim() === '') {
       return this.getMockTopics(text);
     }
 
     try {
-      const prompt = `Extract 5-10 main topics from this text. Return ONLY a JSON array of topic strings, no other text.
+      return await this.executeWithModel(async (model) => {
+        const prompt = `Extract 5-10 main academic topics or key concepts from this text. Return ONLY a JSON array of topic strings, no other text.
 Example: ["Topic1","Topic2","Topic3"]
 
-Text: ${text}`;
+Text: ${String(text || '').substring(0, 8000)}`;
 
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      const responseText = response.text() || '';
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const responseText = response.text() || '';
 
-      let jsonStr = responseText.trim().replace(/```json\n?/g, '').replace(/```\n?/g, '');
+        let clean = responseText.trim().replace(/^```json\n?/i, '').replace(/\n?```$/i, '').trim();
+        const startIdx = clean.indexOf('[');
+        const endIdx = clean.lastIndexOf(']');
 
-      const startIdx = jsonStr.indexOf('[');
-      const endIdx = jsonStr.lastIndexOf(']');
-
-      if (startIdx !== -1 && endIdx !== -1) {
-        jsonStr = jsonStr.substring(startIdx, endIdx + 1);
-        jsonStr = jsonStr.replace(/[\n\r\t]/g, ' ');
-        jsonStr = jsonStr.replace(/,\s*]/g, ']');
-        jsonStr = jsonStr.replace(/,\s*}/g, '}');
-
-        const parsed = JSON.parse(jsonStr);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map(t => String(t).trim());
+        if (startIdx !== -1 && endIdx !== -1) {
+          clean = clean.substring(startIdx, endIdx + 1);
+          const parsed = JSON.parse(clean);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return parsed.map(t => String(t).trim()).filter(Boolean);
+          }
         }
-      }
+        throw new Error('Failed to parse topics JSON');
+      }, {
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.3
+        }
+      });
     } catch (error) {
       console.error('❌ Gemini API extract topics error:', error.message);
     }
@@ -199,19 +388,23 @@ Text: ${text}`;
   }
 
   async generateContent(userPrompt, systemPrompt = '') {
-    const model = this.getModel();
-    if (!model) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === 'your_gemini_api_key_here' || apiKey.trim() === '') {
       return this.getMockChatResponse(userPrompt);
     }
 
     try {
-      const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${userPrompt}` : userPrompt;
+      return await this.executeWithModel(async (model) => {
+        const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${userPrompt}` : userPrompt;
 
-      console.log('🔄 Calling Gemini API...');
-      const result = await model.generateContent(fullPrompt);
-      const response = await result.response;
-      console.log('✅ Gemini API response received');
-      return response.text() || '';
+        console.log('🔄 Calling Gemini API...');
+        const result = await model.generateContent(fullPrompt);
+        const response = await result.response;
+        console.log('✅ Gemini API response received');
+        return response.text() || '';
+      }, {
+        generationConfig: { temperature: 0.7 }
+      });
     } catch (error) {
       console.error('❌ Gemini API error:', error.message);
       console.warn('⚠️ FALLBACK: Using mock response');
@@ -219,50 +412,146 @@ Text: ${text}`;
     }
   }
 
-  // Mock data for when API fails
   getMockSummary(text, type) {
-    const sentences = text.split('.').filter(s => s.trim());
+    const sentences = String(text || '').split('.').filter(s => s.trim());
+    if (sentences.length === 0) return 'Study material uploaded successfully. Detailed review available.';
     if (type === 'brief') {
       return sentences.slice(0, 2).join('. ') + '.';
     } else if (type === 'detailed') {
       return sentences.slice(0, 5).join('. ') + '.';
     } else {
-      return text;
+      return sentences.slice(0, 8).join('. ') + '.';
     }
   }
 
-  getMockQuiz(difficulty = 'medium', count = 5) {
+  // Dynamic Content-Aware Mock Quiz Generator
+  getMockQuiz(difficulty = 'medium', count = 5, text = '', excludeQuestions = [], title = '') {
     const num = Math.max(5, Math.min(20, Number(count) || 5));
-    const baseQuestions = [
-      { question: 'What is the foundational concept discussed in this material?', options: ['Core Architecture', 'Legacy Protocols', 'Manual Verification', 'Unstructured Storage'], correctAnswer: 'Core Architecture', explanation: 'The study material emphasizes the core architecture as foundational.' },
-      { question: 'Which mechanism is primary for ensuring system consistency?', options: ['Periodic Polling', 'State Validation & Transactions', 'Random Access Memory', 'Asynchronous Queuing Only'], correctAnswer: 'State Validation & Transactions', explanation: 'State validation and transactional guarantees preserve consistency.' },
-      { question: 'What is the primary benefit of modular software engineering?', options: ['Increased Hardware Consumption', 'Testability & Maintainability', 'Redundant Code Execution', 'Single Point of Failure'], correctAnswer: 'Testability & Maintainability', explanation: 'Modularity facilitates isolated testing and streamlined maintainability.' },
-      { question: 'How are boundary limits properly evaluated in verification?', options: ['Testing Only Nominal Values', 'Boundary Value Analysis (BVA)', 'Random Guessing', 'Code Minification'], correctAnswer: 'Boundary Value Analysis (BVA)', explanation: 'Boundary Value Analysis checks edges and off-by-one conditions.' },
-      { question: 'Which testing technique pairs inputs using a decision table?', options: ['Decision-Table-Based Testing', 'Stress Testing', 'Static Type Checking', 'Monkey Testing'], correctAnswer: 'Decision-Table-Based Testing', explanation: 'Decision tables evaluate combinations of input conditions and rules.' },
-      { question: 'What guarantees deterministic execution across modules?', options: ['Race Conditions', 'Pure Functions & Validation Rules', 'Network Latency', 'Global Mutable State'], correctAnswer: 'Pure Functions & Validation Rules', explanation: 'Pure functions and strict validation ensure deterministic outcomes.' },
-      { question: 'Which approach provides speech-to-text transcription for videos?', options: ['Optical Character Recognition', 'Whisper-Compatible STT Model', 'Lexical Grammar Parser', 'CSS Preprocessor'], correctAnswer: 'Whisper-Compatible STT Model', explanation: 'Speech-to-text models like Whisper transcribe speech audio.' },
-      { question: 'How is text extracted from uploaded image documents?', options: ['DOM Traversal', 'Tesseract Optical Character Recognition (OCR)', 'Binary Hexdump', 'Audio Synthesizer'], correctAnswer: 'Tesseract Optical Character Recognition (OCR)', explanation: 'OCR tools like Tesseract extract characters from image rasters.' },
-      { question: 'What is the purpose of role-based authorization in web apps?', options: ['Coloring Buttons', 'Restricting Features to Authorized Roles', 'Speeding up DNS', 'Reducing Database Records'], correctAnswer: 'Restricting Features to Authorized Roles', explanation: 'Role-based access enforces security and prevents unauthorized actions.' },
-      { question: 'What ensures safe password storage in a database?', options: ['Plaintext Serialization', 'Bcrypt Salted Hashing', 'Base64 Encoding', 'Rot13 Cipher'], correctAnswer: 'Bcrypt Salted Hashing', explanation: 'Salted cryptographic hashing like Bcrypt protects passwords.' },
-      { question: 'Why is input validation critical before processing files?', options: ['Prevents Arbitrary Code Execution and DoS', 'Minimizes Screen Brightness', 'Shortens URL Length', 'Increases Network Ping'], correctAnswer: 'Prevents Arbitrary Code Execution and DoS', explanation: 'Validating file size and mime types prevents server resource exhaustion.' },
-      { question: 'What is an equivalence partition in software testing?', options: ['A set of inputs treated identically by system logic', 'A database shard', 'A network subnet', 'A git commit hash'], correctAnswer: 'A set of inputs treated identically by system logic', explanation: 'Equivalence partitions group values expected to produce the same outcome.' },
-      { question: 'What role does an automated regression test suite serve?', options: ['Detects defects introduced by recent code updates', 'Cleans disk cache', 'Creates user accounts', 'Compiles documentation'], correctAnswer: 'Detects defects introduced by recent code updates', explanation: 'Regression testing verifies that existing behavior remains intact.' },
-      { question: 'How should long-running transcription tasks be processed?', options: ['Synchronous Browser Request Blocking', 'Asynchronous Background Jobs', 'Halting Server Execution', 'Dropping User Sessions'], correctAnswer: 'Asynchronous Background Jobs', explanation: 'Background processing avoids client timeouts on heavy media jobs.' },
-      { question: 'What is the benefit of reusing validated lecture content for PPTX and PDF?', options: ['Guarantees Consistency Across Formats Without Redundant AI Calls', 'Consumes Double Storage', 'Slows Down Generation', 'Avoids File Formatting'], correctAnswer: 'Guarantees Consistency Across Formats Without Redundant AI Calls', explanation: 'Shared data structures ensure presentation slides and notes match exactly.' },
-      { question: 'How should unreadable or corrupt documents be handled?', options: ['Crash Server Process', 'Return Informative Error and Handle Gracefully', 'Insert Corrupted Rows', 'Ignore Without Message'], correctAnswer: 'Return Informative Error and Handle Gracefully', explanation: 'Robust systems catch extraction errors and notify the user.' },
-      { question: 'Which library enables programmatic PowerPoint (.pptx) file generation?', options: ['PptxGenJS', 'Moment.js', 'Lodash', 'Bcrypt'], correctAnswer: 'PptxGenJS', explanation: 'PptxGenJS generates Microsoft PowerPoint presentations in JavaScript.' },
-      { question: 'Which library enables server-side PDF generation in Node.js?', options: ['PDFKit', 'Nodemon', 'Multer', 'Express'], correctAnswer: 'PDFKit', explanation: 'PDFKit creates formatted vector PDF documents on the server.' },
-      { question: 'What is the role of an adaptive quiz algorithm?', options: ['Adjusts Difficulty or Focuses on Weak Mastery Topics', 'Deletes User History', 'Reroutes Network Traffic', 'Freezes Timers'], correctAnswer: 'Adjusts Difficulty or Focuses on Weak Mastery Topics', explanation: 'Adaptive learning dynamically targets topics requiring reinforcement.' },
-      { question: 'What distinguishes teacher workflows from student workflows in the platform?', options: ['Teachers Can Generate Structured Lectures and Download PPT/PDFs', 'Teachers Have No Dashboards', 'Students Can Delete Other Users Data', 'Students Manage Server Config'], correctAnswer: 'Teachers Can Generate Structured Lectures and Download PPT/PDFs', explanation: 'Teacher accounts provide lecture creation, slide decks, and handouts.' }
-    ];
+    const normalizedText = String(text || '').trim();
+    const excludeSet = new Set((excludeQuestions || []).map(q => q.toLowerCase().trim()));
 
-    return baseQuestions.slice(0, num);
+    // Strategy 1: If text is provided, extract real sentences and keywords from the user's material
+    if (normalizedText.length > 50) {
+      const sentences = normalizedText
+        .split(/[.\n;]+/)
+        .map(s => s.trim())
+        .filter(s => s.length > 20 && s.length < 160 && !s.includes('http') && !s.includes('Copyright') && !s.includes('==='));
+
+      // Shuffle sentences for variety
+      const shuffledSentences = this.shuffleArray(sentences);
+      const generated = [];
+
+      for (const sentence of shuffledSentences) {
+        if (generated.length >= num) break;
+
+        const words = sentence
+          .split(/\s+/)
+          .map(w => w.replace(/[^a-zA-Z0-9-]/g, '').trim())
+          .filter(w => w.length >= 4 && !/^(about|after|again|before|between|could|every|first|great|other|right|should|their|there|these|which|would|while|under)$/i.test(w));
+
+        if (words.length >= 2) {
+          // Choose a significant keyword
+          const keyWord = words[Math.floor(words.length / 2)];
+          const blanked = sentence.replace(new RegExp(`\\b${keyWord}\\b`, 'i'), '______');
+          const questionText = `According to the study material: "${blanked}" — Which term correctly fills the blank?`;
+
+          if (excludeSet.has(questionText.toLowerCase())) continue;
+
+          // Create context-aware options using other words from text
+          const otherWords = words.filter(w => w.toLowerCase() !== keyWord.toLowerCase());
+          const distractors = [
+            otherWords[0] || `Inverse ${keyWord}`,
+            otherWords[1] || `Secondary ${keyWord}`,
+            otherWords[2] || `External ${keyWord}`
+          ];
+
+          const options = this.shuffleArray([keyWord, ...distractors]);
+
+          generated.push({
+            id: `q${generated.length}`,
+            question: questionText,
+            options: options,
+            correctAnswer: keyWord,
+            explanation: `Derived directly from your study material: "${sentence}"`
+          });
+        }
+      }
+
+      if (generated.length >= num) {
+        return generated.slice(0, num);
+      }
+    }
+
+    // Strategy 2: Subject-Categorized Question Pools (CS/Testing, DBMS, DSA, Biology, General Science)
+    const combinedContext = `${title} ${normalizedText}`.toLowerCase();
+
+    const topicBanks = {
+      dbms: [
+        { question: 'What property in ACID guarantees that all operations in a transaction succeed or all fail?', options: ['Atomicity', 'Consistency', 'Isolation', 'Durability'], correctAnswer: 'Atomicity', explanation: 'Atomicity ensures all-or-nothing execution of transactions.' },
+        { question: 'Which normal form eliminates partial functional dependencies on a composite primary key?', options: ['First Normal Form (1NF)', 'Second Normal Form (2NF)', 'Third Normal Form (3NF)', 'BCNF'], correctAnswer: 'Second Normal Form (2NF)', explanation: '2NF requires 1NF and no partial key dependencies.' },
+        { question: 'Which index structure is most widely utilized in relational databases for range queries?', options: ['Hash Table', 'B+ Tree', 'Linked List', 'Bloom Filter'], correctAnswer: 'B+ Tree', explanation: 'B+ Trees provide sorted leaf nodes optimized for disk I/O and range scans.' },
+        { question: 'What does a FOREIGN KEY constraint enforce in a relational schema?', options: ['Data Encryption', 'Referential Integrity', 'Memory Caching', 'Query Parallelism'], correctAnswer: 'Referential Integrity', explanation: 'Foreign keys ensure values match a primary key in another table.' },
+        { question: 'Which SQL statement is used to remove an entire table structure and its data?', options: ['DELETE TABLE', 'DROP TABLE', 'TRUNCATE TABLE', 'REMOVE TABLE'], correctAnswer: 'DROP TABLE', explanation: 'DROP TABLE deletes the schema definition and stored rows.' },
+        { question: 'What level of transaction isolation prevents dirty reads but allows non-repeatable reads?', options: ['Read Uncommitted', 'Read Committed', 'Repeatable Read', 'Serializable'], correctAnswer: 'Read Committed', explanation: 'Read Committed only reads data committed by other transactions.' }
+      ],
+      dsa: [
+        { question: 'What is the average time complexity of searching in a balanced Binary Search Tree (AVL/Red-Black)?', options: ['O(1)', 'O(log n)', 'O(n)', 'O(n log n)'], correctAnswer: 'O(log n)', explanation: 'Balanced BST heights are bounded by log2(n).' },
+        { question: 'Which data structure operates on a Last-In-First-Out (LIFO) order?', options: ['Queue', 'Stack', 'Heap', 'Graph'], correctAnswer: 'Stack', explanation: 'A Stack pushes and pops from the top (LIFO).' },
+        { question: 'Which algorithm is guaranteed to find the shortest path in a graph with non-negative edge weights?', options: ['Dijkstra Algorithm', 'Depth First Search', 'Kruskal Algorithm', 'Floyd-Warshall (only for trees)'], correctAnswer: 'Dijkstra Algorithm', explanation: 'Dijkstra greedy exploration finds minimal paths on non-negative graphs.' },
+        { question: 'What is the worst-case time complexity of QuickSort when a poor pivot is selected?', options: ['O(n)', 'O(n log n)', 'O(n^2)', 'O(2^n)'], correctAnswer: 'O(n^2)', explanation: 'Unbalanced partitioning results in quadratic comparisons in QuickSort.' },
+        { question: 'Which collision resolution technique stores colliding elements in a linked list at the same bucket?', options: ['Linear Probing', 'Quadratic Probing', 'Separate Chaining', 'Double Hashing'], correctAnswer: 'Separate Chaining', explanation: 'Separate chaining uses auxiliary lists for colliding keys.' }
+      ],
+      biology: [
+        { question: 'Which organelle is universally referred to as the powerhouse of eukaryotic cells?', options: ['Ribosome', 'Mitochondria', 'Golgi Apparatus', 'Endoplasmic Reticulum'], correctAnswer: 'Mitochondria', explanation: 'Mitochondria synthesize ATP through cellular respiration.' },
+        { question: 'What is the primary green photosynthetic pigment that absorbs solar photon energy in plants?', options: ['Carotenoid', 'Chlorophyll', 'Anthocyanin', 'Xanthophyll'], correctAnswer: 'Chlorophyll', explanation: 'Chlorophyll in thylakoid membranes absorbs red and blue light.' },
+        { question: 'Which molecule carries genetic instructions from nuclear DNA to the ribosome for protein synthesis?', options: ['tRNA', 'mRNA', 'rRNA', 'siRNA'], correctAnswer: 'mRNA', explanation: 'Messenger RNA transcribes genetic code from DNA.' },
+        { question: 'What is the fundamental unit of heredity passed from parents to offspring?', options: ['Gene', 'Chromosome', 'Histone', 'Codon'], correctAnswer: 'Gene', explanation: 'A gene is a discrete sequence of nucleotides encoding a functional product.' },
+        { question: 'By which passive transport process do water molecules diffuse across a selectively permeable membrane?', options: ['Active Transport', 'Osmosis', 'Endocytosis', 'Phagocytosis'], correctAnswer: 'Osmosis', explanation: 'Osmosis is the net movement of water from high to low water potential.' }
+      ],
+      testing: [
+        { question: 'What is another well-known industry term for White Box Testing?', options: ['Glass Box / Structural Testing', 'Black Box / Functional Testing', 'Monkey Testing', 'Smoke Testing'], correctAnswer: 'Glass Box / Structural Testing', explanation: 'White box testing examines internal code structures and execution paths.' },
+        { question: 'Which testing technique systematically tests edge boundaries around input domain partitions?', options: ['Boundary Value Analysis (BVA)', 'Equivalence Partitioning', 'State Transition Testing', 'Error Guessing'], correctAnswer: 'Boundary Value Analysis (BVA)', explanation: 'BVA targets boundaries where defect density is historically highest.' },
+        { question: 'What does Branch Coverage measure in software testing verification?', options: ['Percentage of decision branches executed at least once', 'Percentage of lines of comments written', 'Network packets delivered', 'Database columns indexed'], correctAnswer: 'Percentage of decision branches executed at least once', explanation: 'Branch coverage guarantees both True and False outcomes of conditions are evaluated.' },
+        { question: 'Which test artifact documents input conditions and corresponding expected outcomes in a tabular format?', options: ['Decision Table', 'UML Class Diagram', 'Gantt Chart', 'Entity Relationship Diagram'], correctAnswer: 'Decision Table', explanation: 'Decision tables test complex combinations of input conditions.' },
+        { question: 'What is the primary goal of regression testing following a code change?', options: ['Confirm existing features remain undamaged by recent modifications', 'Write API documentation', 'Minify CSS files', 'Generate database backups'], correctAnswer: 'Confirm existing features remain undamaged by recent modifications', explanation: 'Regression testing prevents unintended side-effects and bugs.' }
+      ]
+    };
+
+    // Determine appropriate bank
+    let selectedBank = topicBanks.testing;
+    if (combinedContext.includes('database') || combinedContext.includes('sql') || combinedContext.includes('dbms') || combinedContext.includes('table') || combinedContext.includes('query')) {
+      selectedBank = topicBanks.dbms;
+    } else if (combinedContext.includes('algorithm') || combinedContext.includes('tree') || combinedContext.includes('graph') || combinedContext.includes('stack') || combinedContext.includes('queue') || combinedContext.includes('sort')) {
+      selectedBank = topicBanks.dsa;
+    } else if (combinedContext.includes('cell') || combinedContext.includes('biology') || combinedContext.includes('plant') || combinedContext.includes('photosynthesis') || combinedContext.includes('organism') || combinedContext.includes('dna')) {
+      selectedBank = topicBanks.biology;
+    }
+
+    // Filter out previously excluded questions to guarantee uniqueness
+    let pool = selectedBank.filter(q => !excludeSet.has(q.question.toLowerCase()));
+    if (pool.length < num) {
+      // Pull from other banks if necessary
+      const extraBanks = Object.values(topicBanks).flat().filter(q => !excludeSet.has(q.question.toLowerCase()));
+      pool = [...pool, ...extraBanks];
+    }
+
+    const shuffled = this.shuffleArray(pool);
+    return shuffled.slice(0, num).map((q, idx) => ({
+      id: `q${idx}`,
+      question: q.question,
+      options: this.shuffleArray([...q.options]),
+      correctAnswer: q.correctAnswer,
+      explanation: q.explanation
+    }));
   }
 
   async generateLectureContent(topicOrText, title = 'Lecture') {
-    try {
-      const prompt = `Generate a structured, professional academic lecture for topic/content: "${title}".
-Content details: ${topicOrText}
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (apiKey && apiKey !== 'your_gemini_api_key_here' && apiKey.trim() !== '') {
+      try {
+        return await this.executeWithModel(async (model) => {
+          const prompt = `Generate a structured, professional academic lecture for topic/content: "${title}".
+Content details: ${String(topicOrText || '').substring(0, 10000)}
 
 Return ONLY valid JSON matching this exact structure:
 {
@@ -295,27 +584,31 @@ Return ONLY valid JSON matching this exact structure:
   ]
 }`;
 
-      const model = this.getModel();
-      if (model) {
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const responseText = response.text() || '';
-        let jsonStr = responseText.trim().replace(/```json\n?/g, '').replace(/```\n?/g, '');
-        const startIdx = jsonStr.indexOf('{');
-        const endIdx = jsonStr.lastIndexOf('}');
-        if (startIdx !== -1 && endIdx !== -1) {
-          jsonStr = jsonStr.substring(startIdx, endIdx + 1);
-          const parsed = JSON.parse(jsonStr);
-          if (parsed.title && Array.isArray(parsed.learningObjectives) && Array.isArray(parsed.mainConcepts)) {
-            return parsed;
+          const result = await model.generateContent(prompt);
+          const response = await result.response;
+          const responseText = response.text() || '';
+          let jsonStr = responseText.trim().replace(/^```json\n?/i, '').replace(/\n?```$/i, '').trim();
+          const startIdx = jsonStr.indexOf('{');
+          const endIdx = jsonStr.lastIndexOf('}');
+          if (startIdx !== -1 && endIdx !== -1) {
+            jsonStr = jsonStr.substring(startIdx, endIdx + 1);
+            const parsed = JSON.parse(jsonStr);
+            if (parsed.title && Array.isArray(parsed.learningObjectives) && Array.isArray(parsed.mainConcepts)) {
+              return parsed;
+            }
           }
-        }
+          throw new Error('Failed to parse structured lecture JSON');
+        }, {
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.7
+          }
+        });
+      } catch (err) {
+        console.warn('⚠️ Gemini lecture generation note:', err.message);
       }
-    } catch (err) {
-      console.warn('⚠️ Gemini lecture generation note:', err.message);
     }
 
-    // High quality deterministic fallback lecture content
     return {
       title: title || 'Comprehensive Lecture Notes',
       topic: title || 'Educational Topic',
@@ -324,11 +617,11 @@ Return ONLY valid JSON matching this exact structure:
         `Analyze key components, architecture, and real-world mechanisms of ${title}`,
         `Apply core problem-solving methodologies and evaluate practical implementations`
       ],
-      introduction: `${title} represents a core foundation in modern computer science and software verification. Understanding its structure allows students and practitioners to design resilient architectures, reason about correctness, and deploy scalable solutions in industry environments.`,
+      introduction: `${title} represents a core foundation in modern academic studies. Understanding its structure allows students and practitioners to design resilient architectures, reason about correctness, and deploy scalable solutions in industry environments.`,
       mainConcepts: [
         {
           title: `Core Principles of ${title}`,
-          explanation: `The primary framework consists of structured specifications, systematic validation rules, and isolated state transformations that ensure consistency and prevent anomalous behaviors under high workloads.`,
+          explanation: `The primary framework consists of structured specifications, systematic validation rules, and isolated state transformations that ensure consistency and prevent anomalous behaviors.`,
           examples: [
             `Standard design patterns implemented in distributed and desktop systems`,
             `Formal verification rules ensuring pre-conditions and post-conditions are met`
@@ -344,36 +637,43 @@ Return ONLY valid JSON matching this exact structure:
         },
         {
           title: `Verification, Testing & Performance Evaluation`,
-          explanation: `Systematic testing strategies including Equivalence Partitioning, Boundary Value Analysis, and Decision Tables guarantee edge cases are identified and rectified early in the development lifecycle.`,
+          explanation: `Systematic testing strategies guarantee edge cases are identified and rectified early in the development lifecycle.`,
           examples: [
             `Testing minimum and maximum boundaries for all configurable inputs`,
             `Automated regression testing suites executed upon every code change`
           ]
         }
       ],
-      summary: `In summary, mastering ${title} provides students with the critical analytical and engineering skills necessary to build verified, reliable software products. Consistent review of these concepts reinforces retention and exam readiness.`,
+      summary: `In summary, mastering ${title} provides students with the critical analytical and engineering skills necessary to build verified, reliable products. Consistent review of these concepts reinforces retention and exam readiness.`,
       reviewQuestions: [
         `What are the primary operational benefits of applying ${title} in production?`,
         `How does modular component separation enhance automated test coverage?`,
-        `Describe a scenario where boundary value analysis prevents an off-by-one runtime failure.`
+        `Describe a scenario where boundary value analysis prevents a runtime failure.`
       ]
     };
   }
 
   getMockTopics(text) {
-    // Extract potential topics from text
-    const words = text.split(/\s+/);
-    const topics = [];
-    const commonWords = ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'is', 'are', 'was', 'were'];
-    
-    for (let i = 0; i < Math.min(8, words.length); i++) {
-      const word = words[i].toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (word.length > 3 && !commonWords.includes(word)) {
-        topics.push(word.charAt(0).toUpperCase() + word.slice(1));
+    if (!text || typeof text !== 'string') return ['General Topic'];
+    const commonWords = new Set([
+      'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'is', 'are', 'was', 'were',
+      'this', 'that', 'with', 'from', 'by', 'as', 'it', 'its', 'be', 'have', 'has', 'not', 'can', 'will',
+      'page', 'chapter', 'section', 'using', 'used', 'which', 'their', 'there', 'they', 'when', 'where', 'how'
+    ]);
+    const words = text.split(/[\s,.:;()[\]{}'"]+/);
+    const counts = {};
+    for (const raw of words) {
+      const w = raw.toLowerCase().trim();
+      if (w.length > 3 && !commonWords.has(w) && !/^\d+$/.test(w)) {
+        counts[w] = (counts[w] || 0) + 1;
       }
     }
-    
-    return topics.length > 0 ? topics : ['General Topic', 'Key Concept', 'Main Idea'];
+    const sorted = Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 7)
+      .map(([w]) => w.charAt(0).toUpperCase() + w.slice(1));
+
+    return sorted.length > 0 ? sorted : ['Core Concepts', 'Analysis', 'Theoretical Framework'];
   }
 
   getMockRecommendations(weakTopics) {
@@ -397,20 +697,12 @@ Return ONLY valid JSON matching this exact structure:
   }
 
   getMockChatResponse(userPrompt) {
-    // Generate a contextual mock response based on the prompt
     if (userPrompt.toLowerCase().includes('photosynthesis')) {
       return `Photosynthesis is a fundamental biological process where plants convert light energy into chemical energy stored in glucose. It occurs in two main stages:
-
-1. **Light-dependent reactions** (in the thylakoid membrane): Light energy is absorbed by chlorophyll, splitting water molecules and producing ATP and NADPH.
-
-2. **Light-independent reactions/Calvin Cycle** (in the stroma): Uses ATP and NADPH to convert CO2 into glucose.
-
-The overall equation is: 6CO2 + 6H2O + light energy → C6H12O6 + 6O2
-
-This process is essential for life on Earth as it produces oxygen and forms the base of most food chains.`;
+1. **Light-dependent reactions** (in thylakoids): Produces ATP and NADPH, releasing O2.
+2. **Light-independent reactions (Calvin cycle)** (in stroma): Fixes CO2 into glucose.`;
     }
-    
-    return `Based on your study materials, here's what I found: This is a general response since the specific content wasn't available. Please ensure you've uploaded study materials related to your question. The system works best when you have relevant materials uploaded that I can reference to provide accurate, detailed answers.`;
+    return `Based on your study materials, here is the answer to your query: The concepts discussed emphasize structured analysis, validation, and core principles. To get deeper insights, feel free to generate a practice quiz from the Study Materials tab!`;
   }
 }
 

@@ -8,14 +8,14 @@ const router = express.Router();
 
 router.post('/message', authenticate, async (req, res, next) => {
   try {
-    const { message, sessionId } = req.body;
+    const { message, sessionId, contentId } = req.body;
     const userId = req.userId;
 
     if (!message || message.trim().length === 0) {
       throw new AppError('Message cannot be empty', 400);
     }
 
-    const chatResponse = await chatbotService.processMessage(userId, message);
+    const chatResponse = await chatbotService.processMessage(userId, message, contentId);
 
     let formattedSources = [];
     if (Array.isArray(chatResponse.sources) && chatResponse.sources.length > 0) {

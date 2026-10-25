@@ -54,8 +54,17 @@ class ExternalResourceService {
     try {
       const apiKey = process.env.YOUTUBE_API_KEY;
       if (!apiKey) {
-        console.warn('⚠️ YouTube API key not configured');
-        return [];
+        return [{
+          id: 'yt-search',
+          title: `YouTube: "${topic}" Tutorials`,
+          description: `Watch video lectures and tutorials on ${topic}`,
+          thumbnail: 'https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=300&h=200&fit=crop',
+          channel: 'YouTube Learning',
+          url: `https://www.youtube.com/results?search_query=${encodeURIComponent(topic + ' tutorial')}`,
+          type: 'video',
+          platform: 'YouTube',
+          duration: 'Video'
+        }];
       }
 
       const response = await axios.get('https://www.googleapis.com/youtube/v3/search', {
@@ -96,7 +105,7 @@ class ExternalResourceService {
       // Use multiple sources for articles
       const articles = [];
 
-      // 1. Wikipedia API
+      // 1. Wikipedia API (Requires User-Agent per Wikimedia policy)
       try {
         const wikiResponse = await axios.get('https://en.wikipedia.org/w/api.php', {
           params: {
@@ -106,13 +115,16 @@ class ExternalResourceService {
             format: 'json',
             srlimit: 3
           },
+          headers: {
+            'User-Agent': 'AIStudyCompanion/1.0 (academic-project@muj.edu)'
+          },
           timeout: 5000
         });
 
-        if (wikiResponse.data.query.search.length > 0) {
+        if (wikiResponse.data?.query?.search?.length > 0) {
           articles.push(...wikiResponse.data.query.search.map(item => ({
             title: item.title,
-            description: item.snippet,
+            description: item.snippet ? item.snippet.replace(/<[^>]*>/g, '') : '',
             url: `https://en.wikipedia.org/wiki/${item.title.replace(/ /g, '_')}`,
             type: 'article',
             platform: 'Wikipedia',
@@ -130,10 +142,13 @@ class ExternalResourceService {
             tag: topic.toLowerCase().replace(/ /g, '-'),
             per_page: 3
           },
+          headers: {
+            'User-Agent': 'AIStudyCompanion/1.0'
+          },
           timeout: 5000
         });
 
-        if (devtoResponse.data.length > 0) {
+        if (devtoResponse.data?.length > 0) {
           articles.push(...devtoResponse.data.map(item => ({
             title: item.title,
             description: item.description,
@@ -141,34 +156,22 @@ class ExternalResourceService {
             type: 'article',
             platform: 'Dev.to',
             source: 'Dev.to',
-            author: item.user.name
+            author: item.user?.name
           })));
         }
       } catch (error) {
-        console.warn('Dev.to fetch failed:', error.message);
+        // Dev.to tag search may be empty for non-standard tags; silently ignore
       }
 
-      // 3. Medium API (via unofficial endpoint)
-      try {
-        const mediumResponse = await axios.get(`https://medium.com/tag/${topic.toLowerCase().replace(/ /g, '-')}/latest`, {
-          timeout: 5000,
-          headers: {
-            'User-Agent': 'Mozilla/5.0'
-          }
-        });
-
-        // Note: Medium doesn't have a public API, so we return a search link
-        articles.push({
-          title: `Search "${topic}" on Medium`,
-          description: 'Find articles and stories about this topic',
-          url: `https://medium.com/search?q=${encodeURIComponent(topic)}`,
-          type: 'article',
-          platform: 'Medium',
-          source: 'Medium'
-        });
-      } catch (error) {
-        console.warn('Medium fetch failed:', error.message);
-      }
+      // 3. Medium Search Link (Medium blocks automated scrapers with 403, so provide direct search link)
+      articles.push({
+        title: `Search "${topic}" on Medium`,
+        description: 'Read articles and deep-dives from engineering and academic writers on Medium',
+        url: `https://medium.com/search?q=${encodeURIComponent(topic)}`,
+        type: 'article',
+        platform: 'Medium',
+        source: 'Medium'
+      });
 
       return articles;
     } catch (error) {

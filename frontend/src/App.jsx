@@ -39,7 +39,7 @@ const Layout = ({ children }) => {
         { icon: Presentation, label: 'Lecture Studio', path: '/teacher/lectures' },
         { icon: Layers, label: 'Teaching Materials', path: '/content' },
         { icon: MessageCircle, label: 'Chat with AI', path: '/chatbot' },
-        { icon: User, label: 'My Profile', path: `/profile/${user?.username}` }
+        { icon: User, label: 'My Profile', path: '/profile' }
       ]
     : [
         { icon: BarChart3, label: 'Dashboard', path: '/dashboard' },
@@ -50,7 +50,7 @@ const Layout = ({ children }) => {
         { icon: TrendingUp, label: 'Analytics', path: '/analytics' },
         { icon: Users, label: 'Compare', path: '/compare' },
         { icon: MessageCircle, label: 'Chat with AI', path: '/chatbot' },
-        { icon: User, label: 'My Profile', path: `/profile/${user?.username}` }
+        { icon: User, label: 'My Profile', path: '/profile' }
       ];
 
   return (
@@ -252,6 +252,16 @@ function App() {
           element={
             <ProtectedRoute>
               <ChatBot />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Profile />
+              </Layout>
             </ProtectedRoute>
           }
         />

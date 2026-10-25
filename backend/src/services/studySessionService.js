@@ -1,6 +1,7 @@
 import StudySession from '../models/StudySession.js';
 import Content from '../models/Content.js';
 import StudentProfile from '../models/StudentProfile.js';
+import streakService from './streakService.js';
 import { AppError } from '../middleware/errorHandler.js';
 
 export class StudySessionService {
@@ -35,6 +36,11 @@ export class StudySessionService {
       profile.totalStudyHours = (profile.totalStudyHours || 0) + durationHours;
       profile.lastActiveAt = new Date();
       await profile.save();
+    }
+
+    // Update study streak on completing focus session
+    if (session.type === 'focus') {
+      await streakService.recordStudyActivity(userId);
     }
 
     return session;

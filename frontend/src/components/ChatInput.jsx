@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Send, Loader } from 'lucide-react';
+import { Send, Loader, Paperclip } from 'lucide-react';
 
-export const ChatInput = ({ onSendMessage, loading, disabled }) => {
+export const ChatInput = ({ onSendMessage, onOpenUpload, loading, disabled }) => {
   const [message, setMessage] = useState('');
   const [rows, setRows] = useState(1);
   const textareaRef = useRef(null);
@@ -41,7 +41,17 @@ export const ChatInput = ({ onSendMessage, loading, disabled }) => {
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: 0.2 }}
     >
-      <div className="flex gap-3">
+      <div className="flex gap-3 items-end">
+        {onOpenUpload && (
+          <button
+            type="button"
+            onClick={onOpenUpload}
+            title="Upload Study Material to Chat"
+            className="flex-shrink-0 w-12 h-12 border-2 border-border text-text-secondary hover:text-primary hover:border-primary rounded-xl flex items-center justify-center transition-all bg-white"
+          >
+            <Paperclip className="w-5 h-5" />
+          </button>
+        )}
         <div className="flex-1 relative">
           <textarea
             ref={textareaRef}

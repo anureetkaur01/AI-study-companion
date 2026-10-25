@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Upload, Bookmark, FileText, Link, BookOpen, Zap, Play, Youtube, Trash2, Image as ImageIcon, Video as VideoIcon } from 'lucide-react';
+import { Upload, Bookmark, FileText, Link, BookOpen, Zap, Play, Youtube, Trash2, Image as ImageIcon, Video as VideoIcon, MessageCircle } from 'lucide-react';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
@@ -399,6 +399,17 @@ export const Content = () => {
                 className="flex-1"
               >
                 Close
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setShowSummary(false);
+                  navigate(`/chatbot?materialId=${selectedContent._id}`);
+                }}
+                className="flex-1"
+              >
+                <MessageCircle className="w-4 h-4 mr-1.5 inline text-primary" />
+                Chat with AI
               </Button>
               <Button
                 onClick={handleStartQuiz}
@@ -905,24 +916,36 @@ export const Content = () => {
                     {content.summaries?.brief && (
                       <Button 
                         variant="secondary" 
-                        className="flex-1"
+                        className="flex-1 text-xs px-2"
                         onClick={() => {
                           setSelectedContent(content);
                           setShowSummary(true);
                           setSummaryLevel('brief');
                         }}
                       >
-                        <FileText className="w-4 h-4 mr-1 inline" />
-                        View Summary
+                        <FileText className="w-3.5 h-3.5 mr-1 inline" />
+                        Summary
                       </Button>
                     )}
                     <Button 
+                      variant="secondary" 
+                      className="flex-1 text-xs px-2"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/chatbot?materialId=${content._id}`);
+                      }}
+                      title="Chat with AI about this study material"
+                    >
+                      <MessageCircle className="w-3.5 h-3.5 mr-1 inline text-primary" />
+                      Chat
+                    </Button>
+                    <Button 
                       variant={content.summaries?.brief ? "primary" : "secondary"}
-                      className="flex-1"
+                      className="flex-1 text-xs px-2"
                       onClick={() => openQuizConfig(content)}
                       disabled={generatingQuizId !== null}
                     >
-                      {generatingQuizId === content._id ? 'Generating...' : 'Generate Quiz'}
+                      {generatingQuizId === content._id ? 'Generating...' : 'Quiz'}
                     </Button>
                   </div>
                 </Card>

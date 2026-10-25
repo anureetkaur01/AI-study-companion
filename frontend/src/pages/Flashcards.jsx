@@ -3,7 +3,7 @@ import { motion, useMotionValue, useTransform } from 'framer-motion';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import client from '../api/client';
-import { Layers, Download, FileText, Play, Trash2, CheckCircle, XCircle } from 'lucide-react';
+import { Layers, Download, FileText, Play, Trash2, CheckCircle, XCircle, RefreshCw, Sparkles } from 'lucide-react';
 
 export const Flashcards = () => {
   const [contents, setContents] = useState([]);
@@ -145,21 +145,55 @@ export const Flashcards = () => {
     }
   };
 
-  const exportToAnki = async () => {
+  const handleExport = async (content = null, format = 'anki') => {
     try {
-      const contentId = selectedContent?._id;
-      const url = contentId 
-        ? `/flashcards/export/anki?contentId=${contentId}`
-        : '/flashcards/export/anki';
+      const target = content || selectedContent;
+      const contentId = target?._id;
+      const endpoint = format === 'structured'
+        ? (contentId ? `/flashcards/export/anki?contentId=${contentId}&format=structured` : '/flashcards/export/anki?format=structured')
+        : (contentId ? `/flashcards/export/anki?contentId=${contentId}` : '/flashcards/export/anki');
       
-      const response = await client.get(url, { responseType: 'blob' });
-      const blob = new Blob([response.data], { type: 'text/plain' });
+      const response = await client.get(endpoint, { responseType: 'blob' });
+      const blob = new Blob([response.data], { type: 'text/plain;charset=utf-8' });
+      const safeTitle = (target?.title || 'study_flashcards').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const filename = format === 'structured'
+        ? `${safeTitle}_structured_cards.txt`
+        : `${safeTitle}_anki_deck.txt`;
+        
       const link = document.createElement('a');
       link.href = window.URL.createObjectURL(blob);
-      link.download = 'flashcards.txt';
+      link.download = filename;
+      document.body.appendChild(link);
       link.click();
+      link.remove();
+      window.URL.revokeObjectURL(link.href);
+
+      if (format === 'anki') {
+        alert(`✅ Anki deck file downloaded: ${filename}\n\nTo study in Anki:\n1. Open Anki\n2. Click "File" > "Import"\n3. Select ${filename}\n\nAll cards are cleanly formatted and separated with comment dividers!`);
+      } else {
+        alert(`✅ Structured revision deck downloaded: ${filename}\n\nOpen this file in Notepad or any text editor for clean, boxed study cards!`);
+      }
     } catch (error) {
-      alert('Failed to export flashcards');
+      alert('Failed to export flashcards: ' + (error.response?.data?.error?.message || error.message));
+    }
+  };
+
+  const regenerateFlashcards = async (contentId) => {
+    if (!window.confirm('Regenerate fresh, high-quality AI flashcards for this material? Existing cards will be updated with deep conceptual questions.')) {
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await client.post('/flashcards/generate', { contentId, count: 15, forceRegenerate: true });
+      setFlashcards(res.data.data);
+      setCurrentIndex(0);
+      setMode('study');
+      fetchStats();
+      fetchAllFlashcards();
+    } catch (error) {
+      alert(error.response?.data?.error?.message || 'Failed to regenerate flashcards');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -204,12 +238,31 @@ export const Flashcards = () => {
       {/* Select Content Mode */}
       {mode === 'select' && (
         <div>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-2xl font-bold">Select Content</h2>
-            <Button variant="secondary" onClick={exportToAnki}>
-              <Download className="w-4 h-4 mr-2 inline" />
-              Export to Anki
-            </Button>
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <div>
+              <h2 className="text-2xl font-bold">Select Content</h2>
+              <p className="text-sm text-text-secondary">Study flashcards or export clean decks</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => handleExport(null, 'anki')}
+                title="Download all flashcards formatted for Anki (.txt)"
+              >
+                <Download className="w-4 h-4 mr-1.5 inline" />
+                Export Anki (.txt)
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => handleExport(null, 'structured')}
+                title="Download all flashcards in human-readable boxed layout (.txt)"
+              >
+                <FileText className="w-4 h-4 mr-1.5 inline text-accent" />
+                Structured Notes (.txt)
+              </Button>
+            </div>
           </div>
 
           {/* Search Input */}
@@ -239,53 +292,92 @@ export const Flashcards = () => {
                   const hasFlashcards = flashcardCount > 0;
 
                   return (
-                    <Card key={content._id} className="hover:shadow-lg transition-all">
-                      <div className="flex items-center gap-3 mb-4">
-                        <div className="text-primary">
-                          {content.type === 'pdf' && <FileText className="w-8 h-8" />}
-                          {content.type === 'youtube' && <Play className="w-8 h-8" />}
-                          {content.type === 'text' && <Layers className="w-8 h-8" />}
-                        </div>
-                        <div className="flex-1">
-                          <h3 className="font-bold line-clamp-2">{content.title}</h3>
-                          <p className="text-xs text-text-secondary capitalize">{content.type}</p>
-                          {hasFlashcards && (
-                            <p className="text-xs text-success font-medium mt-1">
-                              <CheckCircle className="w-3 h-3 inline mr-1" />
-                              {flashcardCount} flashcards
-                            </p>
-                          )}
+                    <Card key={content._id} className="hover:shadow-lg transition-all flex flex-col justify-between">
+                      <div>
+                        <div className="flex items-center gap-3 mb-4">
+                          <div className="text-primary">
+                            {content.type === 'pdf' && <FileText className="w-8 h-8" />}
+                            {content.type === 'youtube' && <Play className="w-8 h-8" />}
+                            {content.type === 'text' && <Layers className="w-8 h-8" />}
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="font-bold line-clamp-2">{content.title}</h3>
+                            <p className="text-xs text-text-secondary capitalize">{content.type}</p>
+                            {hasFlashcards && (
+                              <p className="text-xs text-success font-medium mt-1">
+                                <CheckCircle className="w-3 h-3 inline mr-1" />
+                                {flashcardCount} flashcards
+                              </p>
+                            )}
+                          </div>
                         </div>
                       </div>
-                      <div className="flex gap-2">
-                        <Button
-                          className="flex-1"
-                          onClick={() => {
-                            setSelectedContent(content);
-                            generateFlashcards(content._id);
-                          }}
-                          loading={loading}
-                        >
-                          {hasFlashcards ? (
-                            <>
-                              <Play className="w-4 h-4 mr-2 inline" />
-                              Study
-                            </>
-                          ) : (
-                            <>
-                              <Layers className="w-4 h-4 mr-2 inline" />
-                              Generate
-                            </>
-                          )}
-                        </Button>
-                        {hasFlashcards && (
+
+                      <div className="space-y-2 mt-4 pt-3 border-t border-border">
+                        <div className="flex gap-2">
                           <Button
-                            variant="secondary"
-                            className="px-3"
-                            onClick={() => deleteFlashcards(content._id)}
+                            className="flex-1"
+                            onClick={() => {
+                              setSelectedContent(content);
+                              generateFlashcards(content._id);
+                            }}
+                            loading={loading}
                           >
-                            <Trash2 className="w-4 h-4" />
+                            {hasFlashcards ? (
+                              <>
+                                <Play className="w-4 h-4 mr-2 inline" />
+                                Study ({flashcardCount})
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles className="w-4 h-4 mr-2 inline" />
+                                Generate Cards
+                              </>
+                            )}
                           </Button>
+                          {hasFlashcards && (
+                            <Button
+                              variant="secondary"
+                              className="px-3"
+                              title="Regenerate deep conceptual flashcards with AI"
+                              onClick={() => regenerateFlashcards(content._id)}
+                            >
+                              <RefreshCw className="w-4 h-4 text-primary" />
+                            </Button>
+                          )}
+                          {hasFlashcards && (
+                            <Button
+                              variant="secondary"
+                              className="px-3 hover:text-danger hover:border-danger"
+                              title="Delete Flashcards"
+                              onClick={() => deleteFlashcards(content._id)}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          )}
+                        </div>
+
+                        {hasFlashcards && (
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleExport(content, 'anki')}
+                              className="flex items-center justify-center gap-1.5 py-1.5 px-2 text-xs font-semibold rounded-md border border-border bg-bg-secondary hover:bg-bg-tertiary text-text-primary transition-all cursor-pointer"
+                              title="Export Anki-compatible TSV deck (.txt)"
+                            >
+                              <Download className="w-3.5 h-3.5 text-primary" />
+                              Export Anki
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleExport(content, 'structured')}
+                              className="flex items-center justify-center gap-1.5 py-1.5 px-2 text-xs font-semibold rounded-md border border-border bg-bg-secondary hover:bg-bg-tertiary text-text-primary transition-all cursor-pointer"
+                              title="Export human-readable structured notes (.txt)"
+                            >
+                              <FileText className="w-3.5 h-3.5 text-accent" />
+                              Clean Notes
+                            </button>
+                          </div>
                         )}
                       </div>
                     </Card>
@@ -305,9 +397,29 @@ export const Flashcards = () => {
               <p className="text-sm font-medium text-text-secondary">
                 Card {currentIndex + 1} of {flashcards.length}
               </p>
-              <Button variant="secondary" size="sm" onClick={() => setMode('select')}>
-                Back
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => handleExport(selectedContent, 'anki')}
+                  title="Export this deck for Anki"
+                >
+                  <Download className="w-3.5 h-3.5 mr-1 inline" />
+                  Anki
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => handleExport(selectedContent, 'structured')}
+                  title="Export this deck as structured notes"
+                >
+                  <FileText className="w-3.5 h-3.5 mr-1 inline" />
+                  Notes
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => setMode('select')}>
+                  Back
+                </Button>
+              </div>
             </div>
             <div className="w-full bg-border rounded-full h-2">
               <div
@@ -413,9 +525,17 @@ export const Flashcards = () => {
           <p className="text-text-secondary mb-8">
             You've reviewed {flashcards.length} flashcards
           </p>
-          <div className="flex gap-4 justify-center">
+          <div className="flex flex-wrap gap-3 justify-center">
             <Button variant="secondary" onClick={() => setMode('select')}>
               Back to Library
+            </Button>
+            <Button variant="secondary" onClick={() => handleExport(selectedContent, 'anki')}>
+              <Download className="w-4 h-4 mr-1.5 inline" />
+              Export Anki (.txt)
+            </Button>
+            <Button variant="secondary" onClick={() => handleExport(selectedContent, 'structured')}>
+              <FileText className="w-4 h-4 mr-1.5 inline text-accent" />
+              Structured Notes (.txt)
             </Button>
             <Button onClick={() => {
               setCurrentIndex(0);
